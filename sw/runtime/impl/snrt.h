@@ -36,6 +36,7 @@
 #include "eu.h"
 #include "kmp.h"
 #include "omp.h"
+#include "packed_fp.h"
 #include "perf_cnt.h"
 #include "printf.h"
 #include "riscv.h"
