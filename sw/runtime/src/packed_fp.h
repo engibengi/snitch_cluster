@@ -141,9 +141,10 @@ inline bool snrt_vfdiv(const void* a, const void* b, void* c, precision_t precis
             SNRT_VFOP_ASM("vfdiv.h");
             break;
         case FP8:
-            // TODO: Implementation issue?? Check result
-            SNRT_VFOP_ASM("vfdiv.b");
-            break;
+            // TODO: Currently vfdiv.b is unsupported
+            // Enable it (uncomment the two following lines) when support comes
+            // SNRT_VFOP_ASM("vfdiv.b");
+            // break;
         default:
             return false;
     }
