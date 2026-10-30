@@ -263,7 +263,69 @@ inline bool snrt_vfsqrt(const void* a, void* b, precision_t precision) {
 
 #undef SNRT_VFSQRT_ASM
 
-//TODO: add vfsum
+
+#define SNRT_VFSUM_ASM(instruction)                        \
+    asm volatile(                                          \
+        "fld %[rs1], 0(%[a])\n"                            \
+        "fld %[rd], 0(%[b])\n"                             \
+        instruction " %[rd], %[rs1]\n"                     \
+        "fsd %[rd], 0(%[c])\n"                             \
+        : [rs1] "=f"(lhs), [rd] "=f"(res) \
+        : [a] "r"(a), [b] "r"(b), [c] "r"(c)               \
+        : "memory"                                         \
+    )
+
+/**
+ * @brief Compute fused three-term pairwise sums with an accumulator word.
+ * @details For output lane j, computes c[j] = round(b[j] + a[2*j] + a[2*j+1]).
+ *          Each result has one final rounding; this is not a serial pair of
+ *          rounded additions or a reduction of the entire input to one value.
+ *          FP32 produces one result, FP16 two and FP8 four, in the low 32 bits.
+ *          The upper 32 bits are all ones: interpreted as FP32/FP16/FP8 lanes,
+ *          these are NaNs. FP64 is not supported; there is no fsum.d branch.
+ *          Loads eight bytes from each input and stores eight result bytes.
+ * @param a Pointer to the packed source word whose adjacent lanes are summed.
+ * @param b Pointer to the accumulator word. Only its low 32 bits contribute.
+ * @param c Pointer to the destination word. May equal either input pointer.
+ * @param precision Element precision: FP32, FP16 or FP8. FP64 is rejected.
+ * @return True if the precision is accepted; false otherwise, without accessing
+ *         the buffers. True does not certify hardware support or report FP flags.
+ * @pre All pointers are eight-byte aligned and refer to accessible regions of
+ *      at least eight bytes. Addresses must be reachable by native CPU loads
+ *      and stores; wider DMA addresses are not supported by this interface.
+ * @pre SSR is disabled, and the calling core supports the selected instruction.
+ * @note The current FP rounding mode is used. For FP16 and FP8, the source and
+ *       destination format-mode settings must match the intended data formats.
+ * @note NaNs, infinities and invalid combinations follow the FP backend's fused
+ *       sum semantics. Upper-word NaNs are boxing bits, not computed sum results.
+ * @note Both inputs are loaded before the output is stored. The caller handles
+ *       synchronization with other cores and outstanding DMA/SSR accesses.
+ */
+inline bool snrt_vfsum(const void* a, const void* b, void* c, precision_t precision) {
+
+    double lhs, res;
+
+    switch(precision){
+        case FP64:
+            // There is no implementation of three members reductive sum in FP64
+            // For obvious reasons!
+            return false;
+        case FP32:
+            SNRT_VFSUM_ASM("vfsum.s");
+            break;
+        case FP16:
+            SNRT_VFSUM_ASM("vfsum.h");
+            break;
+        case FP8:
+            SNRT_VFSUM_ASM("vfsum.b");
+            break;
+        default:
+            return false;
+    }
+    return true;
+}
+
+#undef SNRT_VFSUM_ASM
 
 //TODO: add vfmac
 
