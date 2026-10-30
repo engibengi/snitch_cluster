@@ -197,3 +197,74 @@ inline bool snrt_vfsub(const void* a, const void* b, void* c, precision_t precis
 
 #undef SNRT_VFOP_ASM
 
+#define SNRT_VFSQRT_ASM(instruction)                       \
+    asm volatile(                                          \
+        "fld %[rs1], 0(%[a])\n"                            \
+        instruction " %[rd], %[rs1]\n"                     \
+        "fsd %[rd], 0(%[b])\n"                             \
+        : [rs1] "=f"(val), [rd] "=f"(res)                  \
+        : [a] "r"(a), [b] "r"(b)                           \
+        : "memory"                                         \
+    )
+
+
+
+/**
+ * @brief Compute the square root of each floating-point element in a 64-bit word.
+ * @details Loads eight bytes from the input and stores eight result bytes.
+ *          FP64 uses scalar fsqrt.d; FP32, FP16 and FP8 select packed vfsqrt
+ *          for two, four and eight lanes respectively. One word is processed.
+ * @param a Pointer to the input word.
+ * @param b Pointer to the destination word.
+ *          Pointer can be equal to the input pointer (b==a).
+ * @param precision Element precision: FP64, FP32, FP16 or FP8.
+ * @return True if the precision is recognized; false otherwise, without
+ *         accessing the buffers. True does not certify hardware support or
+ *         report floating-point exceptions.
+ * @pre All pointers are eight-byte aligned and refer to accessible regions of
+ *      at least eight bytes. Addresses must be reachable by native CPU loads
+ *      and stores; wider DMA addresses are not supported by this interface.
+ * @pre SSR is disabled, and the calling core supports the selected instruction.
+ * @warning The default THMULTI div/sqrt backend does not support FP8/FP8ALT.
+ *          This wrapper currently still issues vfsqrt.b for FP8; its result
+ *          must not be treated as a valid FP8 square root on that backend.
+ * @note Negative finite inputs produce NaN and set the invalid-operation flag
+ *       on a supported path. The wrapper does not inspect exception flags.
+ * @note The current FP rounding mode is used. For FP16 and FP8, the source and
+ *       destination format-mode settings must match the intended data formats.
+ * @note Inputs are loaded before the output is stored. The caller is responsible
+ *       for synchronization with other cores and outstanding DMA/SSR accesses.
+ */
+inline bool snrt_vfsqrt(const void* a, void* b, precision_t precision) {
+
+    double val, res;
+
+    switch(precision){
+        case FP64:
+            SNRT_VFSQRT_ASM("fsqrt.d");
+            break;
+        case FP32:
+            SNRT_VFSQRT_ASM("vfsqrt.s");
+            break;
+        case FP16:
+            SNRT_VFSQRT_ASM("vfsqrt.h");
+            break;
+        case FP8:
+            // TODO: Currently vfsqrt.b is unsupported
+            // Enable it (uncomment the two following lines) when support comes
+            // Along with the relative tests
+            // SNRT_VFSQRT_ASM("vfsqrt.b");
+            // break;
+        default:
+            return false;
+    }
+    return true;
+}
+
+#undef SNRT_VFSQRT_ASM
+
+//TODO: add vfsum
+
+//TODO: add vfmac
+
+//TODO: add vfmre
