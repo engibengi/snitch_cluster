@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include <stdbool.h>
+
 #include "types.h"
 
 #define SNRT_VFOP_ASM(instruction)                         \
@@ -327,6 +329,18 @@ inline bool snrt_vfsum(const void* a, const void* b, void* c, precision_t precis
 
 #undef SNRT_VFSUM_ASM
 
+#define SNRT_FMADD_D_ASM(instruction)                                          \
+    asm volatile(                                                              \
+        "fld %[rs1], 0(%[a])\n"                                                \
+        "fld %[rs2], 0(%[b])\n"                                                \
+        "fld %[rs3], 0(%[c])\n"                                                \
+        instruction " %[rd], %[rs1], %[rs2], %[rs3]\n"                         \
+        "fsd %[rd], 0(%[d])\n"                                                 \
+        : [rs1] "=f"(lhs), [rs2] "=f"(rhs), [rs3] "=f"(acc), [rd] "=f"(res64)  \
+        : [a] "r"(a), [b] "r"(b), [c] "r"(c), [d] "r"(d)                       \
+        : "memory"                                                             \
+    )
+
 #define SNRT_VFMAC_ASM(instruction)                        \
     asm volatile(                                          \
         "fld %[rs1], 0(%[a])\n"                            \
@@ -367,16 +381,7 @@ inline bool snrt_vfmac(const void* a, const void* b, const void* c, void* d, pre
 
     switch(precision){
         case FP64:
-            asm volatile(                                                             \
-                "fld %[rs1], 0(%[a])\n"                                               \
-                "fld %[rs2], 0(%[b])\n"                                               \
-                "fld %[rs3], 0(%[c])\n"                                               \
-                "fmadd.d %[rd], %[rs1], %[rs2], %[rs3]\n"                             \
-                "fsd %[rd], 0(%[d])\n"                                                \
-                : [rs1] "=f"(lhs), [rs2] "=f"(rhs), [rs3] "=f"(acc), [rd] "=f"(res64) \
-                : [a] "r"(a), [b] "r"(b), [c] "r"(c), [d] "r"(d)                      \
-                : "memory"                                                            \
-            );
+            SNRT_FMADD_D_ASM("fmadd.d");
             break;
         case FP32:
             SNRT_VFMAC_ASM("vfmac.s");
@@ -394,5 +399,8 @@ inline bool snrt_vfmac(const void* a, const void* b, const void* c, void* d, pre
 }
 
 #undef SNRT_VFMAC_ASM
+
+
+#undef SNRT_FMADD_D_ASM
 
 //TODO: add vfmre
