@@ -44,13 +44,12 @@ int main() {
     const _Float16 expected_f16[] = {7.0f, 17.0f, 31.0, 49.0};
     const uint8_t   expected_f8[] = 
                           {0x47, 0x4c, 0x50, 0x52, 0x54, 0x56, 0x57, 0x59};
-    // Exact three-term sums: 7,   16,   31,   50,   62,   88,  118,  168.
+    // Exact a*b+c:           7,   17,   31,   50,   62,   88,  118,  168.
     // E5M2/RNE values:       7,   16,   32,   48,   64,   96,  112,  160.
     // 88 is a midpoint: ties to even selects 96 (0x56).
 
     unsigned errors = 0;
 
-    // FP64 is rejected and must leave the destination unchanged.
     if (!snrt_vfmac(a_f64, b_f64, c_f64, d_f64, FP64)) ++errors;
     if (d_f64[0] != expected_f64[0]) {
         ++errors;
