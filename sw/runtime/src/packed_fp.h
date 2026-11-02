@@ -342,7 +342,8 @@ inline bool snrt_vfsum(const void* a, const void* b, void* c, precision_t precis
         : "memory"                                                             \
     )
 
-#define SNRT_VFMAC_ASM(instruction)                        \
+// Shared by vfmac/vfmre: rd is both the accumulator input and the result.
+#define SNRT_VFACC_ASM(instruction)                        \
     asm volatile(                                          \
         "fld %[rs1], 0(%[a])\n"                            \
         "fld %[rs2], 0(%[b])\n"                            \
@@ -372,7 +373,7 @@ inline bool snrt_vfsum(const void* a, const void* b, void* c, precision_t precis
  * @pre SSR is disabled, and the calling core supports the selected instruction.
  * @note The current FP rounding mode is used. For FP16 and FP8, the source and
  *       destination format-mode settings must match the intended data formats.
-  * @note All inputs are loaded before the output is stored. The caller handles
+ * @note All inputs are loaded before the output is stored. The caller handles
  *       synchronization with other cores and outstanding DMA/SSR accesses.
  */
 inline bool snrt_vfmac(const void* a, const void* b, const void* c, void* d, precision_t precision) {
@@ -384,33 +385,19 @@ inline bool snrt_vfmac(const void* a, const void* b, const void* c, void* d, pre
             SNRT_FMADD_D_ASM("fmadd.d");
             break;
         case FP32:
-            SNRT_VFMAC_ASM("vfmac.s");
+            SNRT_VFACC_ASM("vfmac.s");
             break;
         case FP16:
-            SNRT_VFMAC_ASM("vfmac.h");
+            SNRT_VFACC_ASM("vfmac.h");
             break;
         case FP8:
-            SNRT_VFMAC_ASM("vfmac.b");
+            SNRT_VFACC_ASM("vfmac.b");
             break;
         default:
             return false;
     }
     return true;
 }
-
-#undef SNRT_VFMAC_ASM
-
-#define SNRT_VFMRE_ASM(instruction)                        \
-    asm volatile(                                          \
-        "fld %[rs1], 0(%[a])\n"                            \
-        "fld %[rs2], 0(%[b])\n"                            \
-        "fld %[rd],  0(%[c])\n"                            \
-        instruction " %[rd], %[rs1], %[rs2]\n"             \
-        "fsd %[rd], 0(%[d])\n"                             \
-        : [rs1] "=f"(lhs), [rs2] "=f"(rhs), [rd] "=f"(acc) \
-        : [a] "r"(a), [b] "r"(b), [c] "r"(c), [d] "r"(d)   \
-        : "memory"                                         \
-    )
 
 /**
  * @brief Compute fused multiply and reduce (negated product plus accumulator).
@@ -444,13 +431,13 @@ inline bool snrt_vfmre(const void* a, const void* b, const void* c, void* d, pre
             SNRT_FMADD_D_ASM("fnmsub.d");
             break;
         case FP32:
-            SNRT_VFMRE_ASM("vfmre.s");
+            SNRT_VFACC_ASM("vfmre.s");
             break;
         case FP16:
-            SNRT_VFMRE_ASM("vfmre.h");
+            SNRT_VFACC_ASM("vfmre.h");
             break;
         case FP8:
-            SNRT_VFMRE_ASM("vfmre.b");
+            SNRT_VFACC_ASM("vfmre.b");
             break;
         default:
             return false;
@@ -458,6 +445,5 @@ inline bool snrt_vfmre(const void* a, const void* b, const void* c, void* d, pre
     return true;
 }
 
-#undef SNRT_VFMRE_ASM
-
+#undef SNRT_VFACC_ASM
 #undef SNRT_FMADD_D_ASM
