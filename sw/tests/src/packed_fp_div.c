@@ -27,6 +27,10 @@ int main() {
     __attribute__((aligned(8))) _Float16  c_f16[] = {0.0, 0.0, 0.0, 0.0};
     __attribute__((aligned(8))) uint8_t    c_f8[] = {0, 0, 0, 0, 0, 0, 0, 0};
 
+    // FP32 copies of the inputs, used as in-place (aliased) destinations.
+    __attribute__((aligned(8))) float     a_alias_f32[] = {2.0f, 4.0f};
+    __attribute__((aligned(8))) float     b_alias_f32[] = {2.0f, 3.0f};
+
     const double    expected_f64[] = {1.0};
     // FP32/RNE: 1 and 4/3 rounded once to FP32.
     const float     expected_f32[] = {1.0f, 0x1.555556p+0f};
@@ -78,6 +82,24 @@ int main() {
     }
     */
 
+
+    // Aliasing test: destination == first source
+    if (!snrt_vfdiv(a_alias_f32, b_f32, a_alias_f32, FP32)) ++errors;
+    for (unsigned i = 0; i < 2; ++i) {
+        if (a_alias_f32[i] != expected_f32[i]) {
+            ++errors;
+            printf("Failed %uth FP32 in-place vfdiv (c==a)!\n", i);
+        }
+    }
+
+    // Aliasing test: destination == second source
+    if (!snrt_vfdiv(a_f32, b_alias_f32, b_alias_f32, FP32)) ++errors;
+    for (unsigned i = 0; i < 2; ++i) {
+        if (b_alias_f32[i] != expected_f32[i]) {
+            ++errors;
+            printf("Failed %uth FP32 in-place vfdiv (c==b)!\n", i);
+        }
+    }
 
     printf("Packed FP division: %s (%u errors)\n",
            errors ? "FAIL" : "PASS", errors);

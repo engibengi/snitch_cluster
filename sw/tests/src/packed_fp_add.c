@@ -26,6 +26,10 @@ int main() {
     __attribute__((aligned(8))) _Float16  c_f16[] = {0.0, 0.0, 0.0, 0.0};
     __attribute__((aligned(8))) uint8_t    c_f8[] = {0, 0, 0, 0, 0, 0, 0, 0};
 
+    // FP32 copies of the inputs, used as in-place (aliased) destinations.
+    __attribute__((aligned(8))) float     a_alias_f32[] = {2.0f, 4.0f};
+    __attribute__((aligned(8))) float     b_alias_f32[] = {2.0f, 3.0f};
+
     const double    expected_f64[] = {4.0};
     const float     expected_f32[] = {4.0f, 7.0f};
     const _Float16  expected_f16[] = {4.0, 7.0, 10.0, 13.0};
@@ -67,6 +71,24 @@ int main() {
         if (c_f8[i] != expected_f8[i]) {
             ++errors;
             printf("Failed %uth FP8 vfadd!\n", i);
+        }
+    }
+
+    // Aliasing test: destination == first source
+    if (!snrt_vfadd(a_alias_f32, b_f32, a_alias_f32, FP32)) ++errors;
+    for (unsigned i = 0; i < 2; ++i) {
+        if (a_alias_f32[i] != expected_f32[i]) {
+            ++errors;
+            printf("Failed %uth FP32 in-place vfadd (c==a)!\n", i);
+        }
+    }
+
+    // Aliasing test: destination == second source
+    if (!snrt_vfadd(a_f32, b_alias_f32, b_alias_f32, FP32)) ++errors;
+    for (unsigned i = 0; i < 2; ++i) {
+        if (b_alias_f32[i] != expected_f32[i]) {
+            ++errors;
+            printf("Failed %uth FP32 in-place vfadd (c==b)!\n", i);
         }
     }
 

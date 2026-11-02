@@ -19,6 +19,9 @@ int main() {
     __attribute__((aligned(8))) _Float16  b_f16[] = {0.0, 0.0, 0.0, 0.0};
     __attribute__((aligned(8))) uint8_t    b_f8[] = {0, 0, 0, 0, 0, 0, 0, 0};
 
+    // FP32 copies of the inputs, used as in-place (aliased) destinations.
+    __attribute__((aligned(8))) float     a_alias_f32[] = {2.0f, 4.0f};
+
     // Independently rounded square roots, assuming startup RNE.
     const double    expected_f64[] = {0x1.6a09e667f3bcdp+0};
     const float     expected_f32[] = {0x1.6a09e60000000p+0f, 0x1.0000000000000p+1f};
@@ -71,6 +74,15 @@ int main() {
         }
     }
     */
+
+    // Aliasing test: destination == source
+    if (!snrt_vfsqrt(a_alias_f32, a_alias_f32, FP32)) ++errors;
+    for (unsigned i = 0; i < 2; ++i) {
+        if (a_alias_f32[i] != expected_f32[i]) {
+            ++errors;
+            printf("Failed %uth FP32 in-place vfsqrt (b==a)!\n", i);
+        }
+    }
 
     printf("Packed FP square root: %s (%u errors)\n",
            errors ? "FAIL" : "PASS", errors);
