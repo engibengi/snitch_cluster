@@ -400,7 +400,64 @@ inline bool snrt_vfmac(const void* a, const void* b, const void* c, void* d, pre
 
 #undef SNRT_VFMAC_ASM
 
+#define SNRT_VFMRE_ASM(instruction)                        \
+    asm volatile(                                          \
+        "fld %[rs1], 0(%[a])\n"                            \
+        "fld %[rs2], 0(%[b])\n"                            \
+        "fld %[rd],  0(%[c])\n"                            \
+        instruction " %[rd], %[rs1], %[rs2]\n"             \
+        "fsd %[rd], 0(%[d])\n"                             \
+        : [rs1] "=f"(lhs), [rs2] "=f"(rhs), [rd] "=f"(acc) \
+        : [a] "r"(a), [b] "r"(b), [c] "r"(c), [d] "r"(d)   \
+        : "memory"                                         \
+    )
+
+/**
+ * @brief Compute fused multiply and reduce (negated product plus accumulator).
+ * @details For output lane j, computes d[j] = round(c[j] - a[j] * b[j]).
+ *          In registers, what happens is: rd[j] = round(rd[j] - rs1[j] * rs2[j]).
+ *          FP64 uses scalar fnmsub.d (one lane, the same formula); FP32, FP16
+ *          and FP8 use packed vfmre.
+ * @param a Pointer to the first packed source word.
+ * @param b Pointer to the second packed source word.
+ * @param c Pointer to the accumulator word. If c == {0, 0[, 0, ...]}, the result
+ *          is the negated product.
+ * @param d Pointer to the destination word. May equal a, b or c.
+ * @param precision Element precision: FP64, FP32, FP16 or FP8.
+ * @return True if the precision is recognized; false otherwise, without
+ *         accessing the buffers. True does not report FP flags.
+ * @pre All pointers are eight-byte aligned and refer to accessible regions of
+ *      at least eight bytes. Addresses must be reachable by native CPU loads
+ *      and stores; wider DMA addresses are not supported by this interface.
+ * @pre SSR is disabled, and the calling core supports the selected instruction.
+ * @note The current FP rounding mode is used. For FP16 and FP8, the source and
+ *       destination format-mode settings must match the intended data formats.
+ * @note All inputs are loaded before the output is stored. The caller handles
+ *       synchronization with other cores and outstanding DMA/SSR accesses.
+ */
+inline bool snrt_vfmre(const void* a, const void* b, const void* c, void* d, precision_t precision) {
+
+    double lhs, rhs, acc, res64;
+
+    switch(precision){
+        case FP64:
+            SNRT_FMADD_D_ASM("fnmsub.d");
+            break;
+        case FP32:
+            SNRT_VFMRE_ASM("vfmre.s");
+            break;
+        case FP16:
+            SNRT_VFMRE_ASM("vfmre.h");
+            break;
+        case FP8:
+            SNRT_VFMRE_ASM("vfmre.b");
+            break;
+        default:
+            return false;
+    }
+    return true;
+}
+
+#undef SNRT_VFMRE_ASM
 
 #undef SNRT_FMADD_D_ASM
-
-//TODO: add vfmre
