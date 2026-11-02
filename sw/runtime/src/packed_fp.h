@@ -270,7 +270,7 @@ inline bool snrt_vfsqrt(const void* a, void* b, precision_t precision) {
         "fld %[rd], 0(%[b])\n"                             \
         instruction " %[rd], %[rs1]\n"                     \
         "fsd %[rd], 0(%[c])\n"                             \
-        : [rs1] "=f"(lhs), [rd] "=f"(res) \
+        : [rs1] "=f"(lhs), [rd] "=f"(res)                  \
         : [a] "r"(a), [b] "r"(b), [c] "r"(c)               \
         : "memory"                                         \
     )
@@ -327,6 +327,72 @@ inline bool snrt_vfsum(const void* a, const void* b, void* c, precision_t precis
 
 #undef SNRT_VFSUM_ASM
 
-//TODO: add vfmac
+#define SNRT_VFMAC_ASM(instruction)                        \
+    asm volatile(                                          \
+        "fld %[rs1], 0(%[a])\n"                            \
+        "fld %[rs2], 0(%[b])\n"                            \
+        "fld %[rd],  0(%[c])\n"                            \
+        instruction " %[rd], %[rs1], %[rs2]\n"             \
+        "fsd %[rd], 0(%[d])\n"                             \
+        : [rs1] "=f"(lhs), [rs2] "=f"(rhs), [rd] "=f"(acc) \
+        : [a] "r"(a), [b] "r"(b), [c] "r"(c), [d] "r"(d)   \
+        : "memory"                                         \
+    )
+
+/**
+ * @brief Compute fused multiply and accumulate with an accumulator word.
+ * @details For output lane j, computes d[j] = round(a[j] * b[j] + c[j]).
+ *          In registers, what happens is: rd[j] = round(rs1[j] * rs2[j] + rd[j]).
+ * @param a Pointer to the first packed source word.
+ * @param b Pointer to the first packed source word.
+ * @param c Pointer to the accumulator word. If c == {0, 0[, 0, ...]}, vfmac == vfmul.
+ * @param d Pointer to the destination word. May equal either input pointer.
+ * @param precision Element precision: FP32, FP16 or FP8. FP64 is rejected.
+ * @return True if the precision is accepted; false otherwise, without accessing
+ *         the buffers. True does not certify hardware support or report FP flags.
+ * @pre All pointers are eight-byte aligned and refer to accessible regions of
+ *      at least eight bytes. Addresses must be reachable by native CPU loads
+ *      and stores; wider DMA addresses are not supported by this interface.
+ * @pre SSR is disabled, and the calling core supports the selected instruction.
+ * @note The current FP rounding mode is used. For FP16 and FP8, the source and
+ *       destination format-mode settings must match the intended data formats.
+ * @note NaNs, infinities and invalid combinations follow the FP backend's fused
+ *       sum semantics. Upper-word NaNs are boxing bits, not computed sum results.
+ * @note All inputs are loaded before the output is stored. The caller handles
+ *       synchronization with other cores and outstanding DMA/SSR accesses.
+ */
+inline bool snrt_vfmac(const void* a, const void* b, const void* c, void* d, precision_t precision) {
+
+    double lhs, rhs, acc, res64;
+
+    switch(precision){
+        case FP64:
+            asm volatile(                                                             \
+                "fld %[rs1], 0(%[a])\n"                                               \
+                "fld %[rs2], 0(%[b])\n"                                               \
+                "fld %[rs3], 0(%[c])\n"                                               \
+                "fmadd.d %[rd], %[rs1], %[rs2], %[rs3]\n"                             \
+                "fsd %[rd], 0(%[d])\n"                                                \
+                : [rs1] "=f"(lhs), [rs2] "=f"(rhs), [rs3] "=f"(acc), [rd] "=f"(res64) \
+                : [a] "r"(a), [b] "r"(b), [c] "r"(c), [d] "r"(d)                      \
+                : "memory"                                                            \
+            );
+            break;
+        case FP32:
+            SNRT_VFMAC_ASM("vfmac.s");
+            break;
+        case FP16:
+            SNRT_VFMAC_ASM("vfmac.h");
+            break;
+        case FP8:
+            SNRT_VFMAC_ASM("vfmac.b");
+            break;
+        default:
+            return false;
+    }
+    return true;
+}
+
+#undef SNRT_VFMAC_ASM
 
 //TODO: add vfmre
