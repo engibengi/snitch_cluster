@@ -111,19 +111,21 @@ inline bool snrt_vfadd(const void* a, const void* b, void* c, precision_t precis
 /**
  * @brief Divide corresponding floating-point elements in two 64-bit words.
  * @details Loads eight bytes from each input and stores eight result bytes.
- *          FP64 uses scalar fdiv.d; FP32, FP16 and FP8 use packed vfdiv.
+ *          FP64 uses scalar fdiv.d; FP32 and FP16 use packed vfdiv.
  * @param a Pointer to the first input word.
  * @param b Pointer to the second input word.
  * @param c Pointer to the destination word.
  *          Pointer can be equal to either input pointer (c==a || c==b).
- * @param precision Element precision: FP64, FP32, FP16 or FP8.
- * @return True if the precision is recognized; false otherwise, without
- *         accessing the buffers.
+ * @param precision Element precision: FP64, FP32 or FP16. FP8 is rejected.
+ * @return True if the precision is supported; false otherwise (including FP8),
+ *         without accessing the buffers.
  * @pre All pointers are eight-byte aligned and refer to accessible regions of
  *      at least eight bytes. Addresses must be reachable by native CPU loads
  *      and stores; wider DMA addresses are not supported by this interface.
  * @pre SSR is disabled, and the calling core supports the selected instruction.
- * @note The current FP rounding mode is used. For FP16 and FP8, the source and
+ * @note FP8 is rejected because the default THMULTI div/sqrt backend does not
+ *       support FP8/FP8ALT, so vfdiv.b is never issued.
+ * @note The current FP rounding mode is used. For FP16, the source and
  *       destination format-mode settings must match the intended data formats.
  * @note Inputs are loaded before the output is stored. The caller is responsible
  *       for synchronization with other cores and outstanding DMA/SSR accesses.
@@ -214,25 +216,24 @@ inline bool snrt_vfsub(const void* a, const void* b, void* c, precision_t precis
 /**
  * @brief Compute the square root of each floating-point element in a 64-bit word.
  * @details Loads eight bytes from the input and stores eight result bytes.
- *          FP64 uses scalar fsqrt.d; FP32, FP16 and FP8 select packed vfsqrt
- *          for two, four and eight lanes respectively. One word is processed.
+ *          FP64 uses scalar fsqrt.d; FP32 and FP16 select packed vfsqrt
+ *          for two and four lanes respectively. One word is processed.
  * @param a Pointer to the input word.
  * @param b Pointer to the destination word.
  *          Pointer can be equal to the input pointer (b==a).
- * @param precision Element precision: FP64, FP32, FP16 or FP8.
- * @return True if the precision is recognized; false otherwise, without
- *         accessing the buffers. True does not certify hardware support or
- *         report floating-point exceptions.
+ * @param precision Element precision: FP64, FP32 or FP16. FP8 is rejected.
+ * @return True if the precision is supported; false otherwise (including FP8),
+ *         without accessing the buffers. True does not report floating-point
+ *         exceptions.
  * @pre All pointers are eight-byte aligned and refer to accessible regions of
  *      at least eight bytes. Addresses must be reachable by native CPU loads
  *      and stores; wider DMA addresses are not supported by this interface.
  * @pre SSR is disabled, and the calling core supports the selected instruction.
- * @warning The default THMULTI div/sqrt backend does not support FP8/FP8ALT.
- *          This wrapper currently still issues vfsqrt.b for FP8; its result
- *          must not be treated as a valid FP8 square root on that backend.
+ * @note FP8 is rejected because the default THMULTI div/sqrt backend does not
+ *       support FP8/FP8ALT, so vfsqrt.b is never issued.
  * @note Negative finite inputs produce NaN and set the invalid-operation flag
  *       on a supported path. The wrapper does not inspect exception flags.
- * @note The current FP rounding mode is used. For FP16 and FP8, the source and
+ * @note The current FP rounding mode is used. For FP16, the source and
  *       destination format-mode settings must match the intended data formats.
  * @note Inputs are loaded before the output is stored. The caller is responsible
  *       for synchronization with other cores and outstanding DMA/SSR accesses.
@@ -358,21 +359,20 @@ inline bool snrt_vfsum(const void* a, const void* b, void* c, precision_t precis
  * @details For output lane j, computes d[j] = round(a[j] * b[j] + c[j]).
  *          In registers, what happens is: rd[j] = round(rs1[j] * rs2[j] + rd[j]).
  * @param a Pointer to the first packed source word.
- * @param b Pointer to the first packed source word.
+ * @param b Pointer to the second packed source word.
  * @param c Pointer to the accumulator word. If c == {0, 0[, 0, ...]}, vfmac == vfmul.
- * @param d Pointer to the destination word. May equal either input pointer.
- * @param precision Element precision: FP32, FP16 or FP8. FP64 is rejected.
- * @return True if the precision is accepted; false otherwise, without accessing
- *         the buffers. True does not certify hardware support or report FP flags.
+ * @param d Pointer to the destination word. May equal a, b or c.
+ * @param precision Element precision: FP64, FP32, FP16 or FP8. FP64 uses scalar
+ *        fmadd.d (one lane, the same formula); the others use packed vfmac.
+ * @return True if the precision is recognized; false otherwise, without
+ *         accessing the buffers. True does not report FP flags.
  * @pre All pointers are eight-byte aligned and refer to accessible regions of
  *      at least eight bytes. Addresses must be reachable by native CPU loads
  *      and stores; wider DMA addresses are not supported by this interface.
  * @pre SSR is disabled, and the calling core supports the selected instruction.
  * @note The current FP rounding mode is used. For FP16 and FP8, the source and
  *       destination format-mode settings must match the intended data formats.
- * @note NaNs, infinities and invalid combinations follow the FP backend's fused
- *       sum semantics. Upper-word NaNs are boxing bits, not computed sum results.
- * @note All inputs are loaded before the output is stored. The caller handles
+  * @note All inputs are loaded before the output is stored. The caller handles
  *       synchronization with other cores and outstanding DMA/SSR accesses.
  */
 inline bool snrt_vfmac(const void* a, const void* b, const void* c, void* d, precision_t precision) {
