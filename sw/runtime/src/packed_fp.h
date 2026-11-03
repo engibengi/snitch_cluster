@@ -199,6 +199,97 @@ inline bool snrt_vfsub(const void* a, const void* b, void* c, precision_t precis
     return true;
 }
 
+/**
+ * @brief Compute the lane-wise minimum of corresponding elements in two 64-bit words.
+ * @details Loads eight bytes from each input and stores eight result bytes.
+ *          FP64 uses scalar fmin.d; FP32, FP16 and FP8 use packed vfmin.
+ *          The selected operand is returned unchanged: no rounding takes place.
+ * @param a Pointer to the first input word.
+ * @param b Pointer to the second input word.
+ * @param c Pointer to the destination word.
+ *          Pointer can be equal to either input pointer (c==a || c==b).
+ * @param precision Element precision: FP64, FP32, FP16 or FP8.
+ * @return True if the precision is recognized; false otherwise, without
+ *         accessing the buffers.
+ * @pre All pointers are eight-byte aligned and refer to accessible regions of
+ *      at least eight bytes. Addresses must be reachable by native CPU loads
+ *      and stores; wider DMA addresses are not supported by this interface.
+ * @pre SSR is disabled, and the calling core supports the selected instruction.
+ * @note NaN and signed-zero handling follows the FP backend's min/max semantics.
+ * @note For FP16 and FP8, the source and destination format-mode settings must
+ *       match the intended data formats.
+ * @note Inputs are loaded before the output is stored. The caller is responsible
+ *       for synchronization with other cores and outstanding DMA/SSR accesses.
+ */
+inline bool snrt_vfmin(const void* a, const void* b, void* c, precision_t precision) {
+
+    double lhs, rhs, res;
+
+    switch(precision){
+        case FP64:
+            SNRT_VFOP_ASM("fmin.d");
+            break;
+        case FP32:
+            SNRT_VFOP_ASM("vfmin.s");
+            break;
+        case FP16:
+            SNRT_VFOP_ASM("vfmin.h");
+            break;
+        case FP8:
+            SNRT_VFOP_ASM("vfmin.b");
+            break;
+        default:
+            return false;
+    }
+    return true;
+}
+
+
+/**
+ * @brief Compute the lane-wise maximum of corresponding elements in two 64-bit words.
+ * @details Loads eight bytes from each input and stores eight result bytes.
+ *          FP64 uses scalar fmax.d; FP32, FP16 and FP8 use packed vfmax.
+ *          The selected operand is returned unchanged: no rounding takes place.
+ * @param a Pointer to the first input word.
+ * @param b Pointer to the second input word.
+ * @param c Pointer to the destination word.
+ *          Pointer can be equal to either input pointer (c==a || c==b).
+ * @param precision Element precision: FP64, FP32, FP16 or FP8.
+ * @return True if the precision is recognized; false otherwise, without
+ *         accessing the buffers.
+ * @pre All pointers are eight-byte aligned and refer to accessible regions of
+ *      at least eight bytes. Addresses must be reachable by native CPU loads
+ *      and stores; wider DMA addresses are not supported by this interface.
+ * @pre SSR is disabled, and the calling core supports the selected instruction.
+ * @note NaN and signed-zero handling follows the FP backend's min/max semantics.
+ * @note For FP16 and FP8, the source and destination format-mode settings must
+ *       match the intended data formats.
+ * @note Inputs are loaded before the output is stored. The caller is responsible
+ *       for synchronization with other cores and outstanding DMA/SSR accesses.
+ */
+inline bool snrt_vfmax(const void* a, const void* b, void* c, precision_t precision) {
+
+    double lhs, rhs, res;
+
+    switch(precision){
+        case FP64:
+            SNRT_VFOP_ASM("fmax.d");
+            break;
+        case FP32:
+            SNRT_VFOP_ASM("vfmax.s");
+            break;
+        case FP16:
+            SNRT_VFOP_ASM("vfmax.h");
+            break;
+        case FP8:
+            SNRT_VFOP_ASM("vfmax.b");
+            break;
+        default:
+            return false;
+    }
+    return true;
+}
+
 #undef SNRT_VFOP_ASM
 
 #define SNRT_VFSQRT_ASM(instruction)                       \
