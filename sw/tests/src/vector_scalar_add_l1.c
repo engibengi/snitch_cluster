@@ -88,7 +88,8 @@ int main() {
     uint8_t*  a8  = ALLOC(uint8_t, N);
     uint8_t*  c8  = ALLOC(uint8_t, N);
     uint8_t*  e8  = ALLOC(uint8_t, N);
-    // One private FP16 output region per compute core, for the single-core test.
+    // One private FP16 output region per compute core, for the single-core
+    // test.
     _Float16* p16 = ALLOC(_Float16, STRIDE16 * snrt_cluster_compute_core_num());
     // Error count of every core, collected by core 0 at the end.
     unsigned* core_errors = ALLOC(unsigned, snrt_cluster_core_num());
@@ -136,40 +137,40 @@ int main() {
 
     // Every core calls the multicore version; the work is split among the
     // compute cores.
-    if (!snrt_vec_add_scalar_l1(a64, &s64, c64, N, FP64)) ++errors;
-    if (!snrt_vec_add_scalar_l1(a32, &s32, c32, N, FP32)) ++errors;
-    if (!snrt_vec_add_scalar_l1(a16, &s16, c16, N, FP16)) ++errors;
-    if (!snrt_vec_add_scalar_l1(a8, &s8, c8, N, FP8)) ++errors;
+    if (!snrt_vs_add_l1(a64, &s64, c64, N, FP64)) ++errors;
+    if (!snrt_vs_add_l1(a32, &s32, c32, N, FP32)) ++errors;
+    if (!snrt_vs_add_l1(a16, &s16, c16, N, FP16)) ++errors;
+    if (!snrt_vs_add_l1(a8, &s8, c8, N, FP8)) ++errors;
     snrt_cluster_hw_barrier();
 
     // Each compute core checks a share of the result (interleaved, so it is
     // mostly data written by other cores).
     if (compute) {
-        errors += check_share("FP64 vec_add_scalar", core, core, cores,
+        errors += check_share("FP64 vs_add_l1", core, core, cores,
                               (volatile uint8_t*)c64, (const uint8_t*)e64, 8);
-        errors += check_share("FP32 vec_add_scalar", core, core, cores,
+        errors += check_share("FP32 vs_add_l1", core, core, cores,
                               (volatile uint8_t*)c32, (const uint8_t*)e32, 4);
-        errors += check_share("FP16 vec_add_scalar", core, core, cores,
+        errors += check_share("FP16 vs_add_l1", core, core, cores,
                               (volatile uint8_t*)c16, (const uint8_t*)e16, 2);
-        errors += check_share("FP8 vec_add_scalar", core, core, cores,
+        errors += check_share("FP8 vs_add_l1", core, core, cores,
                               (volatile uint8_t*)c8, e8, 1);
     }
     if (core == 0) {
-        errors += check_pad("FP64 vec_add_scalar", core, (volatile uint8_t*)c64, 8);
-        errors += check_pad("FP32 vec_add_scalar", core, (volatile uint8_t*)c32, 4);
-        errors += check_pad("FP16 vec_add_scalar", core, (volatile uint8_t*)c16, 2);
-        errors += check_pad("FP8 vec_add_scalar", core, (volatile uint8_t*)c8, 1);
+        errors += check_pad("FP64 vs_add_l1", core, (volatile uint8_t*)c64, 8);
+        errors += check_pad("FP32 vs_add_l1", core, (volatile uint8_t*)c32, 4);
+        errors += check_pad("FP16 vs_add_l1", core, (volatile uint8_t*)c16, 2);
+        errors += check_pad("FP8 vs_add_l1", core, (volatile uint8_t*)c8, 1);
     }
 
     // In-place: the destination is the input (FP32 data).
-    if (!snrt_vec_add_scalar_l1(a32, &s32, a32, N, FP32)) ++errors;
+    if (!snrt_vs_add_l1(a32, &s32, a32, N, FP32)) ++errors;
     snrt_cluster_hw_barrier();
 
     if (compute)
-        errors += check_share("FP32 in-place vec_add_scalar", core, core, cores,
+        errors += check_share("FP32 in-place vs_add_l1", core, core, cores,
                               (volatile uint8_t*)a32, (const uint8_t*)e32, 4);
     if (core == 0)
-        errors += check_pad("FP32 in-place vec_add_scalar", core,
+        errors += check_pad("FP32 in-place vs_add_l1", core,
                             (volatile uint8_t*)a32, 4);
 
     // Single-core version: every compute core runs it on its own, on the whole
@@ -177,10 +178,10 @@ int main() {
     if (compute) {
         _Float16* mine = p16 + core * STRIDE16;
         fill((uint8_t*)mine, STRIDE16 * 2, SENTINEL);
-        if (!snrt_vec_add_scalar_core_l1(a16, &s16, mine, N, FP16)) ++errors;
-        errors += check_share("FP16 vec_add_scalar_core", core, 0, 1,
+        if (!snrt_vs_add_core_l1(a16, &s16, mine, N, FP16)) ++errors;
+        errors += check_share("FP16 vs_add_core_l1", core, 0, 1,
                               (volatile uint8_t*)mine, (const uint8_t*)e16, 2);
-        errors += check_pad("FP16 vec_add_scalar_core", core,
+        errors += check_pad("FP16 vs_add_core_l1", core,
                             (volatile uint8_t*)mine, 2);
     }
 

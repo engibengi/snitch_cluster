@@ -1,7 +1,7 @@
 // Edge cases of the vector-scalar addition on data in L1:
-//  1. Only a subset of the compute cores runs (snrt_vec_add_scalar_core_l1 on a
+//  1. Only a subset of the compute cores runs (snrt_vs_add_core_l1 on a
 //     slice of the vector, the others stay idle). Each core alone, and groups.
-//  2. Many vector lengths through the multicore snrt_vec_add_scalar_l1: empty,
+//  2. Many vector lengths through the multicore snrt_vs_add_l1: empty,
 //     shorter than a word, exactly one word per core, one element more, ...
 // Every precision is tested. The DMA core only takes part in the barriers.
 
@@ -120,7 +120,7 @@ static unsigned run_subset(const Case* k, unsigned mask, unsigned n,
     if (rank == active - 1) elems += n % lanes;
 
     const size_t offset = first * sizeof(uint64_t);
-    return snrt_vec_add_scalar_core_l1((const uint8_t*)k->a + offset, k->s,
+    return snrt_vs_add_core_l1((const uint8_t*)k->a + offset, k->s,
                                     (uint8_t*)k->c + offset, elems, k->prec)
                ? 0
                : 1;
@@ -203,7 +203,7 @@ int main() {
             const unsigned n = lengths[l];
             if (core == 0) fill((uint8_t*)k->c, out_bytes, SENTINEL);
             snrt_cluster_hw_barrier();
-            if (!snrt_vec_add_scalar_l1(k->a, k->s, k->c, n, k->prec)) ++errors;
+            if (!snrt_vs_add_l1(k->a, k->s, k->c, n, k->prec)) ++errors;
             snrt_cluster_hw_barrier();
             if (compute) errors += check_share(k, 0xff, n, core, cores);
             if (core == 0) errors += check_untouched(k, 0xff, n);
