@@ -47,3 +47,4 @@
 #include "sync.h"
 #include "team.h"
 #include "types.h"
+#include "vector.h"
