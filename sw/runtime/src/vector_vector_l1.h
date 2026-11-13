@@ -18,7 +18,7 @@
  *          the instruction they use, and the public functions, one pair per
  *          operation, each a one-line call into the shared code.
  *
- *          Operations available: add, sub, mul, div (not for FP8).
+ *          Operations available: add, sub, mul, div (not for FP8), min, max.
  */
 
 #pragma once
@@ -37,6 +37,8 @@ typedef enum {
     SNRT_VV_SUB,
     SNRT_VV_MUL,
     SNRT_VV_DIV,
+    SNRT_VV_MIN,
+    SNRT_VV_MAX,
 } snrt_vv_op_t;
 
 // Hardware loop over three streams: ft2 = instruction(ft0, ft1). ft0 and ft1
@@ -131,6 +133,14 @@ static inline void snrt_vv_stream(snrt_vv_op_t op, precision_t precision,
                     break;
             }
             break;
+        case SNRT_VV_MIN:
+            SNRT_VV_BY_PRECISION(SNRT_VV_STREAM_ASM, "fmin.d", "vfmin.s",
+                                 "vfmin.h", "vfmin.b");
+            break;
+        case SNRT_VV_MAX:
+            SNRT_VV_BY_PRECISION(SNRT_VV_STREAM_ASM, "fmax.d", "vfmax.s",
+                                 "vfmax.h", "vfmax.b");
+            break;
     }
 }
 
@@ -173,6 +183,14 @@ static inline void snrt_vv_word(snrt_vv_op_t op, precision_t precision,
                 default:
                     break;
             }
+            break;
+        case SNRT_VV_MIN:
+            SNRT_VV_BY_PRECISION(SNRT_VV_WORD_ASM, "fmin.d", "vfmin.s",
+                                 "vfmin.h", "vfmin.b");
+            break;
+        case SNRT_VV_MAX:
+            SNRT_VV_BY_PRECISION(SNRT_VV_WORD_ASM, "fmax.d", "vfmax.s",
+                                 "vfmax.h", "vfmax.b");
             break;
     }
 }
@@ -420,4 +438,70 @@ inline bool snrt_vv_div_core_l1(const void* a, const void* b, void* c,
 inline bool snrt_vv_div_l1(const void* a, const void* b, void* c, size_t n,
                            precision_t precision) {
     return snrt_vv_generic_l1(SNRT_VV_DIV, a, b, c, n, precision);
+}
+
+//------------------------------------------------------------------------------
+// Minimum
+//------------------------------------------------------------------------------
+
+/**
+ * @brief Take the minimum of two vectors in L1 element by element, on the
+ *        calling core only.
+ * @details c[i] = min(a[i], b[i]) for i in [0, n). FP64 uses fmin.d; FP32,
+ *          FP16 and FP8 use vfmin. The result is one of the two operands:
+ *          nothing is rounded.
+ * @note NaN and signed-zero handling follows the FP backend's min/max
+ *       semantics. The FP rounding mode does not apply to this operation.
+ * @note Parameters, return value, preconditions and the other notes: as in
+ *       snrt_vv_add_core_l1().
+ */
+inline bool snrt_vv_min_core_l1(const void* a, const void* b, void* c,
+                                size_t n, precision_t precision) {
+    return snrt_vv_generic_core_l1(SNRT_VV_MIN, a, b, c, n, precision);
+}
+
+/**
+ * @brief Take the minimum of two vectors in L1 element by element, across the
+ *        compute cores of the cluster.
+ * @details Same operation as snrt_vv_min_core_l1(), with the work split as in
+ *          snrt_vv_add_l1().
+ * @note Parameters, return value, preconditions and the other notes: as in
+ *       snrt_vv_add_l1().
+ */
+inline bool snrt_vv_min_l1(const void* a, const void* b, void* c, size_t n,
+                           precision_t precision) {
+    return snrt_vv_generic_l1(SNRT_VV_MIN, a, b, c, n, precision);
+}
+
+//------------------------------------------------------------------------------
+// Maximum
+//------------------------------------------------------------------------------
+
+/**
+ * @brief Take the maximum of two vectors in L1 element by element, on the
+ *        calling core only.
+ * @details c[i] = max(a[i], b[i]) for i in [0, n). FP64 uses fmax.d; FP32,
+ *          FP16 and FP8 use vfmax. The result is one of the two operands:
+ *          nothing is rounded.
+ * @note NaN and signed-zero handling follows the FP backend's min/max
+ *       semantics. The FP rounding mode does not apply to this operation.
+ * @note Parameters, return value, preconditions and the other notes: as in
+ *       snrt_vv_add_core_l1().
+ */
+inline bool snrt_vv_max_core_l1(const void* a, const void* b, void* c,
+                                size_t n, precision_t precision) {
+    return snrt_vv_generic_core_l1(SNRT_VV_MAX, a, b, c, n, precision);
+}
+
+/**
+ * @brief Take the maximum of two vectors in L1 element by element, across the
+ *        compute cores of the cluster.
+ * @details Same operation as snrt_vv_max_core_l1(), with the work split as in
+ *          snrt_vv_add_l1().
+ * @note Parameters, return value, preconditions and the other notes: as in
+ *       snrt_vv_add_l1().
+ */
+inline bool snrt_vv_max_l1(const void* a, const void* b, void* c, size_t n,
+                           precision_t precision) {
+    return snrt_vv_generic_l1(SNRT_VV_MAX, a, b, c, n, precision);
 }
