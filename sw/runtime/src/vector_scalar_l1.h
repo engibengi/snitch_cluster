@@ -1,12 +1,14 @@
 /**
  * @file
  * @brief Vector-scalar operations on data that is already in L1 (TCDM).
- * @details Add, subtract, multiply and divide every element of a vector by one
- *          scalar: c[i] = a[i] <op> *s. The functions here take pointers into
- *          the cluster's L1 memory and do no DMA transfer. They are the compute
- *          building blocks: the default vector-scalar functions (without the
- *          _l1 suffix, in vector_scalar.h) take pointers anywhere, and run
- *          these on tiles they bring into L1.
+ * @details Add, subtract, multiply, divide, or take the minimum or maximum of
+ *          every element of a vector and one scalar: c[i] = a[i] <op> *s (for
+ *          minimum and maximum, c[i] = min(a[i], *s) or max(a[i], *s)). The
+ *          functions here take pointers into the cluster's L1 memory and do no
+ *          DMA transfer. They are the compute building blocks: the default
+ *          vector-scalar functions (without the _l1 suffix, in
+ *          vector_scalar.h) take pointers anywhere, and run these on tiles
+ *          they bring into L1.
  *
  *          Each operation comes in two versions:
  *          - snrt_vs_<op>_core_l1: runs on the calling core only;
@@ -34,7 +36,9 @@ typedef enum {
     SNRT_VS_ADD,
     SNRT_VS_SUB,
     SNRT_VS_MUL,
-    SNRT_VS_DIV
+    SNRT_VS_DIV,
+    SNRT_VS_MIN,
+    SNRT_VS_MAX
 } snrt_vs_op_t;
 
 // Load one scalar element into an FP register, using a load of exactly the
@@ -132,6 +136,14 @@ static inline void snrt_vs_stream(snrt_vs_op_t op, precision_t precision,
             SNRT_VS_BY_PRECISION(SNRT_VS_STREAM_ASM, "fmul.d", "vfmul.r.s",
                                  "vfmul.r.h", "vfmul.r.b");
             break;
+        case SNRT_VS_MIN:
+            SNRT_VS_BY_PRECISION(SNRT_VS_STREAM_ASM, "fmin.d", "vfmin.r.s",
+                                 "vfmin.r.h", "vfmin.r.b");
+            break;
+        case SNRT_VS_MAX:
+            SNRT_VS_BY_PRECISION(SNRT_VS_STREAM_ASM, "fmax.d", "vfmax.r.s",
+                                 "vfmax.r.h", "vfmax.r.b");
+            break;
         case SNRT_VS_DIV:
             // No FP8 here: vfdiv.r.b is not supported (see snrt_vs_supported).
             switch (precision) {
@@ -171,6 +183,14 @@ static inline void snrt_vs_word(snrt_vs_op_t op, precision_t precision,
         case SNRT_VS_MUL:
             SNRT_VS_BY_PRECISION(SNRT_VS_WORD_ASM, "fmul.d", "vfmul.r.s",
                                  "vfmul.r.h", "vfmul.r.b");
+            break;
+        case SNRT_VS_MIN:
+            SNRT_VS_BY_PRECISION(SNRT_VS_WORD_ASM, "fmin.d", "vfmin.r.s",
+                                 "vfmin.r.h", "vfmin.r.b");
+            break;
+        case SNRT_VS_MAX:
+            SNRT_VS_BY_PRECISION(SNRT_VS_WORD_ASM, "fmax.d", "vfmax.r.s",
+                                 "vfmax.r.h", "vfmax.r.b");
             break;
         case SNRT_VS_DIV:
             // No FP8 here: vfdiv.r.b is not supported (see snrt_vs_supported).
@@ -438,4 +458,70 @@ inline bool snrt_vs_div_core_l1(const void* a, const void* s, void* c,
 inline bool snrt_vs_div_l1(const void* a, const void* s, void* c,
                            size_t n, precision_t precision) {
     return snrt_vs_generic_l1(SNRT_VS_DIV, a, s, c, n, precision);
+}
+
+//------------------------------------------------------------------------------
+// Minimum
+//------------------------------------------------------------------------------
+
+/**
+ * @brief Take the minimum of each element of a vector in L1 and a scalar, on
+ *        the calling core only.
+ * @details c[i] = min(a[i], *s) for i in [0, n). FP64 uses fmin.d; FP32, FP16
+ *          and FP8 use vfmin.r. The result is one of the two operands: nothing
+ *          is rounded.
+ * @note NaN and signed-zero handling follows the FP backend's min/max
+ *       semantics. The FP rounding mode does not apply to this operation.
+ * @note Parameters, return value, preconditions and the other notes: as in
+ *       snrt_vs_add_core_l1().
+ */
+inline bool snrt_vs_min_core_l1(const void* a, const void* s, void* c,
+                                size_t n, precision_t precision) {
+    return snrt_vs_generic_core_l1(SNRT_VS_MIN, a, s, c, n, precision);
+}
+
+/**
+ * @brief Take the minimum of each element of a vector in L1 and a scalar,
+ *        across the compute cores of the cluster.
+ * @details Same operation as snrt_vs_min_core_l1(), with the work split as in
+ *          snrt_vs_add_l1().
+ * @note Parameters, return value, preconditions and notes: as in
+ *       snrt_vs_add_l1().
+ */
+inline bool snrt_vs_min_l1(const void* a, const void* s, void* c, size_t n,
+                           precision_t precision) {
+    return snrt_vs_generic_l1(SNRT_VS_MIN, a, s, c, n, precision);
+}
+
+//------------------------------------------------------------------------------
+// Maximum
+//------------------------------------------------------------------------------
+
+/**
+ * @brief Take the maximum of each element of a vector in L1 and a scalar, on
+ *        the calling core only.
+ * @details c[i] = max(a[i], *s) for i in [0, n). FP64 uses fmax.d; FP32, FP16
+ *          and FP8 use vfmax.r. The result is one of the two operands: nothing
+ *          is rounded.
+ * @note NaN and signed-zero handling follows the FP backend's min/max
+ *       semantics. The FP rounding mode does not apply to this operation.
+ * @note Parameters, return value, preconditions and the other notes: as in
+ *       snrt_vs_add_core_l1().
+ */
+inline bool snrt_vs_max_core_l1(const void* a, const void* s, void* c,
+                                size_t n, precision_t precision) {
+    return snrt_vs_generic_core_l1(SNRT_VS_MAX, a, s, c, n, precision);
+}
+
+/**
+ * @brief Take the maximum of each element of a vector in L1 and a scalar,
+ *        across the compute cores of the cluster.
+ * @details Same operation as snrt_vs_max_core_l1(), with the work split as in
+ *          snrt_vs_add_l1().
+ * @note Parameters, return value, preconditions and notes: as in
+ *       snrt_vs_add_l1().
+ */
+inline bool snrt_vs_max_l1(const void* a, const void* s, void* c, size_t n,
+                           precision_t precision) {
+    return snrt_vs_generic_l1(SNRT_VS_MAX, a, s, c, n, precision);
 }
