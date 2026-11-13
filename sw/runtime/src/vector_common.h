@@ -65,6 +65,24 @@ static inline void snrt_vec_stream_begin(const void* src, void* dst,
 }
 
 /**
+ * @brief Start streaming: SSR data movers 0 and 1 read @p words words from
+ *        @p src0 and @p src1, and data mover 2 writes @p words words to
+ *        @p dst.
+ * @details The streams are consumed by a hardware loop (frep) that reads ft0
+ *          and ft1 and writes ft2. Call snrt_vec_stream_end() afterwards.
+ * @pre words > 0 and all the pointers are eight-byte aligned.
+ */
+static inline void snrt_vec_stream_begin_2in(const void* src0,
+                                             const void* src1, void* dst,
+                                             size_t words) {
+    snrt_ssr_loop_1d(SNRT_SSR_DM_ALL, words, sizeof(uint64_t));
+    snrt_ssr_read(SNRT_SSR_DM0, SNRT_SSR_1D, (void*)src0);
+    snrt_ssr_read(SNRT_SSR_DM1, SNRT_SSR_1D, (void*)src1);
+    snrt_ssr_write(SNRT_SSR_DM2, SNRT_SSR_1D, dst);
+    snrt_ssr_enable();
+}
+
+/**
  * @brief Wait for the FP pipeline to drain and turn the streams off.
  */
 static inline void snrt_vec_stream_end() {
