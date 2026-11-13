@@ -18,7 +18,7 @@
  *          the instruction they use, and the public functions, one pair per
  *          operation, each a one-line call into the shared code.
  *
- *          Operations available: add.
+ *          Operations available: add, sub, mul, div (not for FP8).
  */
 
 #pragma once
@@ -32,7 +32,12 @@
 // Implementation, shared by all the operations
 //==============================================================================
 
-typedef enum { SNRT_VV_ADD } snrt_vv_op_t;
+typedef enum {
+    SNRT_VV_ADD,
+    SNRT_VV_SUB,
+    SNRT_VV_MUL,
+    SNRT_VV_DIV,
+} snrt_vv_op_t;
 
 // Hardware loop over three streams: ft2 = instruction(ft0, ft1). ft0 and ft1
 // stream the two source vectors and ft2 streams the destination.
@@ -79,11 +84,13 @@ typedef enum { SNRT_VV_ADD } snrt_vv_op_t;
 
 /**
  * @brief Check that an operation exists for a precision.
- * @details Every operation exists for every precision, for now.
+ * @details Every operation exists for every precision, except division in FP8
+ *          (the FP backend has no FP8 divider).
  */
 static inline bool snrt_vv_supported(snrt_vv_op_t op, precision_t precision) {
-    (void)op;
-    return snrt_vec_precision_valid(precision);
+    if (!snrt_vec_precision_valid(precision)) return false;
+    if (op == SNRT_VV_DIV && precision == FP8) return false;
+    return true;
 }
 
 /**
@@ -99,6 +106,30 @@ static inline void snrt_vv_stream(snrt_vv_op_t op, precision_t precision,
         case SNRT_VV_ADD:
             SNRT_VV_BY_PRECISION(SNRT_VV_STREAM_ASM, "fadd.d", "vfadd.s",
                                  "vfadd.h", "vfadd.b");
+            break;
+        case SNRT_VV_SUB:
+            SNRT_VV_BY_PRECISION(SNRT_VV_STREAM_ASM, "fsub.d", "vfsub.s",
+                                 "vfsub.h", "vfsub.b");
+            break;
+        case SNRT_VV_MUL:
+            SNRT_VV_BY_PRECISION(SNRT_VV_STREAM_ASM, "fmul.d", "vfmul.s",
+                                 "vfmul.h", "vfmul.b");
+            break;
+        case SNRT_VV_DIV:
+            // No FP8 here: vfdiv.b is not supported (see snrt_vv_supported).
+            switch (precision) {
+                case FP64:
+                    SNRT_VV_STREAM_ASM("fdiv.d");
+                    break;
+                case FP32:
+                    SNRT_VV_STREAM_ASM("vfdiv.s");
+                    break;
+                case FP16:
+                    SNRT_VV_STREAM_ASM("vfdiv.h");
+                    break;
+                default:
+                    break;
+            }
             break;
     }
 }
@@ -118,6 +149,30 @@ static inline void snrt_vv_word(snrt_vv_op_t op, precision_t precision,
         case SNRT_VV_ADD:
             SNRT_VV_BY_PRECISION(SNRT_VV_WORD_ASM, "fadd.d", "vfadd.s",
                                  "vfadd.h", "vfadd.b");
+            break;
+        case SNRT_VV_SUB:
+            SNRT_VV_BY_PRECISION(SNRT_VV_WORD_ASM, "fsub.d", "vfsub.s",
+                                 "vfsub.h", "vfsub.b");
+            break;
+        case SNRT_VV_MUL:
+            SNRT_VV_BY_PRECISION(SNRT_VV_WORD_ASM, "fmul.d", "vfmul.s",
+                                 "vfmul.h", "vfmul.b");
+            break;
+        case SNRT_VV_DIV:
+            // No FP8 here: vfdiv.b is not supported (see snrt_vv_supported).
+            switch (precision) {
+                case FP64:
+                    SNRT_VV_WORD_ASM("fdiv.d");
+                    break;
+                case FP32:
+                    SNRT_VV_WORD_ASM("vfdiv.s");
+                    break;
+                case FP16:
+                    SNRT_VV_WORD_ASM("vfdiv.h");
+                    break;
+                default:
+                    break;
+            }
             break;
     }
 }
@@ -268,4 +323,101 @@ inline bool snrt_vv_add_core_l1(const void* a, const void* b, void* c,
 inline bool snrt_vv_add_l1(const void* a, const void* b, void* c, size_t n,
                            precision_t precision) {
     return snrt_vv_generic_l1(SNRT_VV_ADD, a, b, c, n, precision);
+}
+
+//------------------------------------------------------------------------------
+// Subtraction
+//------------------------------------------------------------------------------
+
+/**
+ * @brief Subtract two vectors in L1 element by element, on the calling core
+ *        only.
+ * @details c[i] = a[i] - b[i] for i in [0, n). FP64 uses fsub.d; the others
+ *          use vfsub.
+ * @note Parameters, preconditions and the other notes: as in
+ *       snrt_vv_add_core_l1().
+ */
+inline bool snrt_vv_sub_core_l1(const void* a, const void* b, void* c,
+                                size_t n, precision_t precision) {
+    return snrt_vv_generic_core_l1(SNRT_VV_SUB, a, b, c, n, precision);
+}
+
+/**
+ * @brief Subtract two vectors in L1 element by element, across the compute
+ *        cores of the cluster.
+ * @details Same operation as snrt_vv_sub_core_l1(), with the work split
+ *          as in snrt_vv_add_l1().
+ * @note Parameters, preconditions and the other notes: as in
+ *       snrt_vv_add_l1().
+ */
+inline bool snrt_vv_sub_l1(const void* a, const void* b, void* c, size_t n,
+                           precision_t precision) {
+    return snrt_vv_generic_l1(SNRT_VV_SUB, a, b, c, n, precision);
+}
+
+//------------------------------------------------------------------------------
+// Multiplication
+//------------------------------------------------------------------------------
+
+/**
+ * @brief Multiply two vectors in L1 element by element, on the calling core
+ *        only.
+ * @details c[i] = a[i] * b[i] for i in [0, n). FP64 uses fmul.d; the others
+ *          use vfmul.
+ * @note Parameters, preconditions and the other notes: as in
+ *       snrt_vv_add_core_l1().
+ */
+inline bool snrt_vv_mul_core_l1(const void* a, const void* b, void* c,
+                                size_t n, precision_t precision) {
+    return snrt_vv_generic_core_l1(SNRT_VV_MUL, a, b, c, n, precision);
+}
+
+/**
+ * @brief Multiply two vectors in L1 element by element, across the compute
+ *        cores of the cluster.
+ * @details Same operation as snrt_vv_mul_core_l1(), with the work split
+ *          as in snrt_vv_add_l1().
+ * @note Parameters, preconditions and the other notes: as in
+ *       snrt_vv_add_l1().
+ */
+inline bool snrt_vv_mul_l1(const void* a, const void* b, void* c, size_t n,
+                           precision_t precision) {
+    return snrt_vv_generic_l1(SNRT_VV_MUL, a, b, c, n, precision);
+}
+
+//------------------------------------------------------------------------------
+// Division
+//------------------------------------------------------------------------------
+
+/**
+ * @brief Divide two vectors in L1 element by element, on the calling core
+ *        only.
+ * @details c[i] = a[i] / b[i] for i in [0, n). The first vector is the
+ *          dividend. FP64 uses fdiv.d; FP32 and FP16 use vfdiv.
+ * @return True if the operation exists for the precision; false otherwise,
+ *         without accessing the buffers. FP8 is not supported: the FP backend
+ *         has no FP8 divider (vfdiv.b is not usable).
+ * @note The last, partial word is padded with zeros, so the unused lanes
+ *       compute 0 / 0. This sets the FP invalid flag, but the padding lanes
+ *       are never stored.
+ * @note Parameters, preconditions and the other notes: as in
+ *       snrt_vv_add_core_l1().
+ */
+inline bool snrt_vv_div_core_l1(const void* a, const void* b, void* c,
+                                size_t n, precision_t precision) {
+    return snrt_vv_generic_core_l1(SNRT_VV_DIV, a, b, c, n, precision);
+}
+
+/**
+ * @brief Divide two vectors in L1 element by element, across the compute
+ *        cores of the cluster.
+ * @details Same operation as snrt_vv_div_core_l1(), with the work split
+ *          as in snrt_vv_add_l1().
+ * @return As snrt_vv_div_core_l1(): false for FP8.
+ * @note Parameters, preconditions and the other notes: as in
+ *       snrt_vv_add_l1().
+ */
+inline bool snrt_vv_div_l1(const void* a, const void* b, void* c, size_t n,
+                           precision_t precision) {
+    return snrt_vv_generic_l1(SNRT_VV_DIV, a, b, c, n, precision);
 }
