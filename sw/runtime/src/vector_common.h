@@ -168,6 +168,43 @@ SNRT_VEC_INLINE void snrt_vec_stream_begin_2in(const void* src0,
 }
 
 /**
+ * @brief Start streaming: SSR data movers 0 and 1 read @p words words from
+ *        @p src0 and @p src1. Nothing is written.
+ * @details The streams are consumed by a hardware loop (frep) that reads ft0
+ *          and ft1. Call snrt_vec_stream_end() afterwards.
+ * @pre words > 0 and both pointers are eight-byte aligned.
+ */
+SNRT_VEC_INLINE void snrt_vec_stream_begin_2read(const void* src0,
+                                               const void* src1,
+                                               size_t words) {
+    snrt_ssr_loop_1d(SNRT_SSR_DM0, words, sizeof(uint64_t));
+    snrt_ssr_loop_1d(SNRT_SSR_DM1, words, sizeof(uint64_t));
+    snrt_ssr_read(SNRT_SSR_DM0, SNRT_SSR_1D, (void*)src0);
+    snrt_ssr_read(SNRT_SSR_DM1, SNRT_SSR_1D, (void*)src1);
+    snrt_ssr_enable();
+}
+
+/**
+ * @brief Start streaming: SSR data movers 0 and 1 read @p words words from
+ *        @p src0 and @p src1, with @p stride_bytes between consecutive words.
+ *        Nothing is written.
+ * @details As snrt_vec_stream_begin_2read() (which is this with a stride of
+ *          eight bytes). Call snrt_vec_stream_end() afterwards.
+ * @pre words > 0, both pointers are eight-byte aligned and the stride is a
+ *      multiple of eight bytes.
+ */
+SNRT_VEC_INLINE void snrt_vec_stream_begin_2read_strided(const void* src0,
+                                                         const void* src1,
+                                                         size_t words,
+                                                         size_t stride_bytes) {
+    snrt_ssr_loop_1d(SNRT_SSR_DM0, words, stride_bytes);
+    snrt_ssr_loop_1d(SNRT_SSR_DM1, words, stride_bytes);
+    snrt_ssr_read(SNRT_SSR_DM0, SNRT_SSR_1D, (void*)src0);
+    snrt_ssr_read(SNRT_SSR_DM1, SNRT_SSR_1D, (void*)src1);
+    snrt_ssr_enable();
+}
+
+/**
  * @brief Wait for the FP pipeline to drain and turn the streams off.
  */
 SNRT_VEC_INLINE void snrt_vec_stream_end() {

@@ -5,5 +5,6 @@
 
 #pragma once
 
+#include "vector_reduce.h"
 #include "vector_scalar.h"
 #include "vector_vector.h"
