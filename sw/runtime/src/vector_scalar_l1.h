@@ -19,6 +19,11 @@
  *          is shared by all the operations, which differ only in the
  *          instruction they use. The second part is the public functions, one
  *          pair per operation, each a one-line call into the shared code.
+ *
+ *          Memory layout: the eight-core functions read one stream and write
+ *          one, and showed no dependence on the distance between a and c
+ *          (eight values of c - a modulo 32 measured, FP64 and FP8, 256 to
+ *          2048 words). See paper_notes/BANK_CONFLICTS.md, section 8.
  */
 
 #pragma once
@@ -357,11 +362,12 @@ SNRT_VEC_INLINE bool snrt_vs_add_core_l1(const void* a, const void* s, void* c,
 /**
  * @brief Add a scalar to each element of a vector in L1, across the compute
  *        cores of the cluster.
- * @details Same operation as snrt_vs_add_core_l1(). The 64-bit words are dealt out to
- *          the eight compute cores in turns (core c takes words c, c + 8,
- *          c + 16, ...), which avoids bank conflicts; the partial last word,
- *          if any, goes to the core whose turn it is. Cores that are given no
- *          work return immediately. No core touches another core's elements.
+ * @details Same operation as snrt_vs_add_core_l1(). The 64-bit words are dealt
+ *          out to the eight compute cores in turns (core c takes words c,
+ *          c + 8, c + 16, ...), which avoids most bank conflicts; the
+ *          partial last word, if any, goes to the core whose turn it is.
+ *          Cores that are given no work return immediately. No core touches
+ *          another core's elements.
  * @param a Pointer to the first input element.
  * @param s Pointer to the scalar: one element of the selected precision.
  * @param c Pointer to the first output element. May equal a, as above.
@@ -382,8 +388,8 @@ SNRT_VEC_INLINE bool snrt_vs_add_l1(const void* a, const void* s, void* c,
 }
 
 /**
- * @brief snrt_vs_add_core_l1() on a vector that fills whole 64-bit words, on the
- *        calling core only. Caller-padded variant.
+ * @brief snrt_vs_add_core_l1() on a vector that fills whole 64-bit
+ *        words, on the calling core only. Caller-padded variant.
  * @details n is a number of WORDS. If the vector has a partial last word, the
  *          caller has made room for all of it: the elements after the vector's
  *          last one are read, and written to c (meaningless values). No tail
@@ -442,8 +448,8 @@ SNRT_VEC_INLINE bool snrt_vs_sub_l1(const void* a, const void* s, void* c,
 }
 
 /**
- * @brief snrt_vs_sub_core_l1() on a vector that fills whole 64-bit words, on the
- *        calling core only. Caller-padded variant.
+ * @brief snrt_vs_sub_core_l1() on a vector that fills whole 64-bit
+ *        words, on the calling core only. Caller-padded variant.
  * @details n is a number of WORDS. If the vector has a partial last word, the
  *          caller has made room for all of it: the elements after the vector's
  *          last one are read, and written to c (meaningless values). No tail
@@ -501,8 +507,8 @@ SNRT_VEC_INLINE bool snrt_vs_mul_l1(const void* a, const void* s, void* c,
 }
 
 /**
- * @brief snrt_vs_mul_core_l1() on a vector that fills whole 64-bit words, on the
- *        calling core only. Caller-padded variant.
+ * @brief snrt_vs_mul_core_l1() on a vector that fills whole 64-bit
+ *        words, on the calling core only. Caller-padded variant.
  * @details n is a number of WORDS. If the vector has a partial last word, the
  *          caller has made room for all of it: the elements after the vector's
  *          last one are read, and written to c (meaningless values). No tail
@@ -570,8 +576,8 @@ SNRT_VEC_INLINE bool snrt_vs_div_l1(const void* a, const void* s, void* c,
 }
 
 /**
- * @brief snrt_vs_div_core_l1() on a vector that fills whole 64-bit words, on the
- *        calling core only. Caller-padded variant.
+ * @brief snrt_vs_div_core_l1() on a vector that fills whole 64-bit
+ *        words, on the calling core only. Caller-padded variant.
  * @details n is a number of WORDS. If the vector has a partial last word, the
  *          caller has made room for all of it: the elements after the vector's
  *          last one are read, and written to c (meaningless values). No tail
@@ -632,8 +638,8 @@ SNRT_VEC_INLINE bool snrt_vs_min_l1(const void* a, const void* s, void* c,
 }
 
 /**
- * @brief snrt_vs_min_core_l1() on a vector that fills whole 64-bit words, on the
- *        calling core only. Caller-padded variant.
+ * @brief snrt_vs_min_core_l1() on a vector that fills whole 64-bit
+ *        words, on the calling core only. Caller-padded variant.
  * @details n is a number of WORDS. If the vector has a partial last word, the
  *          caller has made room for all of it: the elements after the vector's
  *          last one are read, and written to c (meaningless values). No tail
@@ -694,8 +700,8 @@ SNRT_VEC_INLINE bool snrt_vs_max_l1(const void* a, const void* s, void* c,
 }
 
 /**
- * @brief snrt_vs_max_core_l1() on a vector that fills whole 64-bit words, on the
- *        calling core only. Caller-padded variant.
+ * @brief snrt_vs_max_core_l1() on a vector that fills whole 64-bit
+ *        words, on the calling core only. Caller-padded variant.
  * @details n is a number of WORDS. If the vector has a partial last word, the
  *          caller has made room for all of it: the elements after the vector's
  *          last one are read, and written to c (meaningless values). No tail

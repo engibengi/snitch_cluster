@@ -8,10 +8,14 @@
  *          vector_vector.h) take pointers anywhere, and run these on tiles
  *          they bring into L1.
  *
- *          Each operation comes in two versions:
+ *          Each operation comes in four versions:
  *          - snrt_vv_<op>_core_l1: runs on the calling core only;
  *          - snrt_vv_<op>_l1: every compute core of the cluster calls it, and
- *            the work is split among them.
+ *            the work is split among them (in turns: core c takes words c,
+ *            c + 8, ...);
+ *          - snrt_vv_<op>_padded_core_l1 and snrt_vv_<op>_padded_l1: the same
+ *            for vectors the caller has padded to whole words (the length is
+ *            given in words, no tail code runs).
  *
  *          The code has the same two parts as vector_scalar_l1.h: an
  *          implementation shared by all the operations, which differ only in
@@ -20,6 +24,25 @@
  *
  *          Operations available: add, sub, mul, div (not for FP8), min, max,
  *          and axpy (z = alpha * x + y), at the end of the file.
+ *
+ *          Memory layout (bank conflicts). The L1 memory has 32 banks of one
+ *          64-bit word. The eight-core functions (_l1 and _padded_l1) run the
+ *          streams of the cores in lockstep, and streams that hit the same
+ *          bank in the same cycle make one core wait. The cost depends only on
+ *          the distances between the buffers in words, modulo 32. Measured on
+ *          the eight-core vector-vector add (FP64, 2048 and 1000 words) over
+ *          all the 1024 combinations of b - a and c - a (a, b: the inputs,
+ *          c: the output), and on FP64 axpy over 64 of them: with b - a = 16
+ *          (mod 32) there is no extra cost for any c, including c == a and
+ *          c == b (in
+ *          place); 17 and 19 were also clean. Other values of b - a cost up to
+ *          57 % (166 cycles at 2048 words, 79 at 1000) for some c: 22 % of the
+ *          combinations cost more than 3 cycles. So: put b 16 words (mod 32)
+ *          after a, and c anywhere. FP32, FP16 and FP8 axpy (two instructions
+ *          per word, the FPU is the limit) and the vector-scalar functions
+ *          (two streams) showed no dependence on the layout. The one-core
+ *          functions were not measured. See paper_notes/BANK_CONFLICTS.md,
+ *          section 8.
  */
 
 #pragma once
@@ -348,11 +371,12 @@ SNRT_VEC_INLINE bool snrt_vv_add_core_l1(const void* a, const void* b, void* c,
 /**
  * @brief Add two vectors in L1 element by element, across the compute cores of
  *        the cluster.
- * @details Same operation as snrt_vv_add_core_l1(). The 64-bit words are dealt out to
- *          the eight compute cores in turns (core c takes words c, c + 8,
- *          c + 16, ...), which avoids bank conflicts; the partial last word,
- *          if any, goes to the core whose turn it is. Cores that are given no
- *          work return immediately. No core touches another core's elements.
+ * @details Same operation as snrt_vv_add_core_l1(). The 64-bit words are dealt
+ *          out to the eight compute cores in turns (core c takes words c,
+ *          c + 8, c + 16, ...), which avoids most bank conflicts; the
+ *          partial last word, if any, goes to the core whose turn it is.
+ *          Cores that are given no work return immediately. No core touches
+ *          another core's elements.
  * @param a Pointer to the first element of the first input vector.
  * @param b Pointer to the first element of the second input vector.
  * @param c Pointer to the first element of the output vector. May equal a or
@@ -366,6 +390,8 @@ SNRT_VEC_INLINE bool snrt_vv_add_core_l1(const void* a, const void* b, void* c,
  * @pre Same pointer and mode preconditions as snrt_vv_add_core_l1().
  * @note There is no barrier inside. Before reading the result from another core
  *       or by DMA, synchronize with snrt_cluster_hw_barrier().
+ * @note Memory layout: see "Memory layout" in the description of this file;
+ *       the distances between a, b and c modulo 32 words matter.
  */
 SNRT_VEC_INLINE bool snrt_vv_add_l1(const void* a, const void* b, void* c,
                                     size_t n, precision_t precision) {
@@ -394,6 +420,8 @@ SNRT_VEC_INLINE bool snrt_vv_add_padded_core_l1(const void* a, const void* b,
  *        compute cores. Caller-padded variant.
  * @details n is a number of WORDS; see snrt_vv_add_padded_core_l1().
  * @pre As snrt_vv_add_l1(), with a, b and c covering n words.
+ * @note Memory layout: see "Memory layout" in the description of this file;
+ *       the distances between a, b and c modulo 32 words matter.
  */
 SNRT_VEC_INLINE bool snrt_vv_add_padded_l1(const void* a, const void* b,
                                             void* c, size_t n,
@@ -426,6 +454,8 @@ SNRT_VEC_INLINE bool snrt_vv_sub_core_l1(const void* a, const void* b, void* c,
  *          as in snrt_vv_add_l1().
  * @note Parameters, preconditions and the other notes: as in
  *       snrt_vv_add_l1().
+ * @note Memory layout: see "Memory layout" in the description of this file;
+ *       the distances between a, b and c modulo 32 words matter.
  */
 SNRT_VEC_INLINE bool snrt_vv_sub_l1(const void* a, const void* b, void* c,
                                     size_t n, precision_t precision) {
@@ -454,6 +484,8 @@ SNRT_VEC_INLINE bool snrt_vv_sub_padded_core_l1(const void* a, const void* b,
  *        compute cores. Caller-padded variant.
  * @details n is a number of WORDS; see snrt_vv_sub_padded_core_l1().
  * @pre As snrt_vv_sub_l1(), with a, b and c covering n words.
+ * @note Memory layout: see "Memory layout" in the description of this file;
+ *       the distances between a, b and c modulo 32 words matter.
  */
 SNRT_VEC_INLINE bool snrt_vv_sub_padded_l1(const void* a, const void* b,
                                             void* c, size_t n,
@@ -486,6 +518,8 @@ SNRT_VEC_INLINE bool snrt_vv_mul_core_l1(const void* a, const void* b, void* c,
  *          as in snrt_vv_add_l1().
  * @note Parameters, preconditions and the other notes: as in
  *       snrt_vv_add_l1().
+ * @note Memory layout: see "Memory layout" in the description of this file;
+ *       the distances between a, b and c modulo 32 words matter.
  */
 SNRT_VEC_INLINE bool snrt_vv_mul_l1(const void* a, const void* b, void* c,
                                     size_t n, precision_t precision) {
@@ -514,6 +548,8 @@ SNRT_VEC_INLINE bool snrt_vv_mul_padded_core_l1(const void* a, const void* b,
  *        compute cores. Caller-padded variant.
  * @details n is a number of WORDS; see snrt_vv_mul_padded_core_l1().
  * @pre As snrt_vv_mul_l1(), with a, b and c covering n words.
+ * @note Memory layout: see "Memory layout" in the description of this file;
+ *       the distances between a, b and c modulo 32 words matter.
  */
 SNRT_VEC_INLINE bool snrt_vv_mul_padded_l1(const void* a, const void* b,
                                             void* c, size_t n,
@@ -553,6 +589,8 @@ SNRT_VEC_INLINE bool snrt_vv_div_core_l1(const void* a, const void* b, void* c,
  * @return As snrt_vv_div_core_l1(): false for FP8.
  * @note Parameters, preconditions and the other notes: as in
  *       snrt_vv_add_l1().
+ * @note Memory layout: see "Memory layout" in the description of this file;
+ *       the distances between a, b and c modulo 32 words matter.
  */
 SNRT_VEC_INLINE bool snrt_vv_div_l1(const void* a, const void* b, void* c,
                                     size_t n, precision_t precision) {
@@ -581,6 +619,8 @@ SNRT_VEC_INLINE bool snrt_vv_div_padded_core_l1(const void* a, const void* b,
  *        compute cores. Caller-padded variant.
  * @details n is a number of WORDS; see snrt_vv_div_padded_core_l1().
  * @pre As snrt_vv_div_l1(), with a, b and c covering n words.
+ * @note Memory layout: see "Memory layout" in the description of this file;
+ *       the distances between a, b and c modulo 32 words matter.
  */
 SNRT_VEC_INLINE bool snrt_vv_div_padded_l1(const void* a, const void* b,
                                             void* c, size_t n,
@@ -616,6 +656,8 @@ SNRT_VEC_INLINE bool snrt_vv_min_core_l1(const void* a, const void* b, void* c,
  *          snrt_vv_add_l1().
  * @note Parameters, return value, preconditions and the other notes: as in
  *       snrt_vv_add_l1().
+ * @note Memory layout: see "Memory layout" in the description of this file;
+ *       the distances between a, b and c modulo 32 words matter.
  */
 SNRT_VEC_INLINE bool snrt_vv_min_l1(const void* a, const void* b, void* c,
                                     size_t n, precision_t precision) {
@@ -644,6 +686,8 @@ SNRT_VEC_INLINE bool snrt_vv_min_padded_core_l1(const void* a, const void* b,
  *        compute cores. Caller-padded variant.
  * @details n is a number of WORDS; see snrt_vv_min_padded_core_l1().
  * @pre As snrt_vv_min_l1(), with a, b and c covering n words.
+ * @note Memory layout: see "Memory layout" in the description of this file;
+ *       the distances between a, b and c modulo 32 words matter.
  */
 SNRT_VEC_INLINE bool snrt_vv_min_padded_l1(const void* a, const void* b,
                                             void* c, size_t n,
@@ -679,6 +723,8 @@ SNRT_VEC_INLINE bool snrt_vv_max_core_l1(const void* a, const void* b, void* c,
  *          snrt_vv_add_l1().
  * @note Parameters, return value, preconditions and the other notes: as in
  *       snrt_vv_add_l1().
+ * @note Memory layout: see "Memory layout" in the description of this file;
+ *       the distances between a, b and c modulo 32 words matter.
  */
 SNRT_VEC_INLINE bool snrt_vv_max_l1(const void* a, const void* b, void* c,
                                     size_t n, precision_t precision) {
@@ -707,6 +753,8 @@ SNRT_VEC_INLINE bool snrt_vv_max_padded_core_l1(const void* a, const void* b,
  *        compute cores. Caller-padded variant.
  * @details n is a number of WORDS; see snrt_vv_max_padded_core_l1().
  * @pre As snrt_vv_max_l1(), with a, b and c covering n words.
+ * @note Memory layout: see "Memory layout" in the description of this file;
+ *       the distances between a, b and c modulo 32 words matter.
  */
 SNRT_VEC_INLINE bool snrt_vv_max_padded_l1(const void* a, const void* b,
                                             void* c, size_t n,
@@ -971,11 +1019,12 @@ SNRT_VEC_INLINE bool snrt_vv_axpy_core_l1(const void* alpha, const void* x,
 /**
  * @brief Compute z = alpha * x + y for vectors in L1, across the compute cores
  *        of the cluster.
- * @details Same operation as snrt_vv_axpy_core_l1(). The 64-bit words are dealt out to
- *          the eight compute cores in turns (core c takes words c, c + 8,
- *          c + 16, ...), which avoids bank conflicts; the partial last word,
- *          if any, goes to the core whose turn it is. Cores that are given no
- *          work return immediately. No core touches another core's elements.
+ * @details Same operation as snrt_vv_axpy_core_l1(). The 64-bit words are dealt
+ *          out to the eight compute cores in turns (core c takes words c,
+ *          c + 8, c + 16, ...), which avoids most bank conflicts; the
+ *          partial last word, if any, goes to the core whose turn it is.
+ *          Cores that are given no work return immediately. No core touches
+ *          another core's elements.
  * @return True if the precision is recognized; false otherwise, without
  *         accessing the buffers.
  * @pre Every core of the cluster calls this with the same arguments. The DMA
@@ -984,6 +1033,8 @@ SNRT_VEC_INLINE bool snrt_vv_axpy_core_l1(const void* alpha, const void* x,
  * @pre Same pointer and mode preconditions as snrt_vv_axpy_core_l1().
  * @note There is no barrier inside. Before reading the result from another
  *       core or by DMA, synchronize with snrt_cluster_hw_barrier().
+ * @note Memory layout: see "Memory layout" in the description of this file;
+ *       the distances between a, b and c modulo 32 words matter.
  */
 SNRT_VEC_INLINE bool snrt_vv_axpy_l1(const void* alpha, const void* x,
                                      const void* y, void* z, size_t n,
@@ -1011,6 +1062,8 @@ SNRT_VEC_INLINE bool snrt_vv_axpy_padded_core_l1(const void* alpha,
  * @brief snrt_vv_axpy_l1() on vectors that fill whole 64-bit words, across the
  *        compute cores. Caller-padded variant: n is a number of WORDS, see
  *        snrt_vv_axpy_padded_core_l1().
+ * @note Memory layout: see "Memory layout" in the description of this file;
+ *       the distances between a, b and c modulo 32 words matter.
  */
 SNRT_VEC_INLINE bool snrt_vv_axpy_padded_l1(const void* alpha, const void* x,
                                             const void* y, void* z, size_t n,
