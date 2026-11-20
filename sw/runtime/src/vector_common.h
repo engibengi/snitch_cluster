@@ -204,6 +204,66 @@ SNRT_VEC_INLINE void snrt_vec_stream_begin_2read_strided(const void* src0,
     snrt_ssr_enable();
 }
 
+// Accesses of a given size through any type, to copy the bytes of the elements.
+typedef uint32_t __attribute__((may_alias, aligned(4))) snrt_u32_alias;
+typedef uint16_t __attribute__((may_alias, aligned(2))) snrt_u16_alias;
+
+/**
+ * @brief Copy the first @p bytes (0 to 7) bytes of a vector's partial last word
+ *        into a word that is otherwise zero, so the partial word can be
+ *        processed like a whole one without reading outside the vector.
+ * @details Straight-line code (a four-byte, a two-byte and a one-byte copy,
+ *          each taken if its bit is set in @p bytes), with no function call.
+ *          A call to memcpy would make the whole function non-leaf, and the
+ *          compiler would then save and restore a dozen registers at every
+ *          call, even when there is no partial word. In the cycle trace of the
+ *          dot product that was 26 of the 74 instructions of a call.
+ * @param word Output, eight-byte aligned.
+ * @param src Pointer to the bytes, four-byte aligned.
+ */
+SNRT_VEC_INLINE void snrt_vec_tail_load(uint64_t* word, const void* src,
+                                        size_t bytes) {
+    uint8_t* d = (uint8_t*)word;
+    const uint8_t* s = (const uint8_t*)src;
+    ((uint32_t*)word)[0] = 0;
+    ((uint32_t*)word)[1] = 0;
+    if (bytes & 4) {
+        *(snrt_u32_alias*)d = *(const snrt_u32_alias*)s;
+        d += 4;
+        s += 4;
+    }
+    if (bytes & 2) {
+        *(snrt_u16_alias*)d = *(const snrt_u16_alias*)s;
+        d += 2;
+        s += 2;
+    }
+    if (bytes & 1) *d = *s;
+}
+
+/**
+ * @brief Copy the first @p bytes (0 to 7) bytes of a word to a vector's partial
+ *        last word: the inverse of snrt_vec_tail_load(), so that nothing
+ *        outside the vector is written.
+ * @param dst Pointer to the bytes, four-byte aligned.
+ * @param word Source, eight-byte aligned.
+ */
+SNRT_VEC_INLINE void snrt_vec_tail_store(void* dst, const uint64_t* word,
+                                         size_t bytes) {
+    uint8_t* d = (uint8_t*)dst;
+    const uint8_t* s = (const uint8_t*)word;
+    if (bytes & 4) {
+        *(snrt_u32_alias*)d = *(const snrt_u32_alias*)s;
+        d += 4;
+        s += 4;
+    }
+    if (bytes & 2) {
+        *(snrt_u16_alias*)d = *(const snrt_u16_alias*)s;
+        d += 2;
+        s += 2;
+    }
+    if (bytes & 1) *d = *s;
+}
+
 /**
  * @brief Wait for the FP pipeline to drain and turn the streams off.
  */
