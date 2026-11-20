@@ -71,7 +71,7 @@ typedef enum {
  *        mode (see the table at the top of the file).
  */
 SNRT_VEC_INLINE bool snrt_vec_dot_supported(precision_t precision,
-                                          snrt_acc_t acc) {
+                                            snrt_acc_t acc) {
     if (!snrt_vec_precision_valid(precision)) return false;
     if (acc == SNRT_ACC_WIDE) return precision == FP16 || precision == FP8;
     return acc == SNRT_ACC_SAME;
@@ -317,41 +317,6 @@ SNRT_VEC_INLINE void snrt_dot_word(precision_t precision, snrt_acc_t acc,
 #undef SNRT_DOT_GROUPS_FP64_ASM
 #undef SNRT_DOT_REST_FP64_ASM
 
-// Accesses of a given size through any type, to copy the bytes of the elements.
-typedef uint32_t __attribute__((may_alias, aligned(4))) snrt_u32_alias;
-typedef uint16_t __attribute__((may_alias, aligned(2))) snrt_u16_alias;
-
-/**
- * @brief Copy the last @p bytes (0 to 7) bytes of a vector into a word that is
- *        otherwise zero, so a partial word can be processed like a whole one.
- * @details Straight-line code (a four-byte, a two-byte and a one-byte copy,
- *          each taken if its bit is set in @p bytes), with no function call.
- *          A call to memcpy would make the whole function non-leaf, and the
- *          compiler would then save and restore a dozen registers at every
- *          call, even when there is no partial word. In the cycle trace, that
- *          was 26 of the 74 instructions of a call.
- * @param word Output, eight-byte aligned.
- * @param src Pointer to the bytes, four-byte aligned.
- */
-SNRT_VEC_INLINE void snrt_dot_tail_word(uint64_t* word, const void* src,
-                                        size_t bytes) {
-    uint8_t* d = (uint8_t*)word;
-    const uint8_t* s = (const uint8_t*)src;
-    ((uint32_t*)word)[0] = 0;
-    ((uint32_t*)word)[1] = 0;
-    if (bytes & 4) {
-        *(snrt_u32_alias*)d = *(const snrt_u32_alias*)s;
-        d += 4;
-        s += 4;
-    }
-    if (bytes & 2) {
-        *(snrt_u16_alias*)d = *(const snrt_u16_alias*)s;
-        d += 2;
-        s += 2;
-    }
-    if (bytes & 1) *d = *s;
-}
-
 //==============================================================================
 // Public functions
 //==============================================================================
@@ -391,8 +356,8 @@ SNRT_VEC_INLINE bool snrt_dot_core_impl(const void* a, const void* b,
         uint64_t in0, in1;
         const size_t bytes = tail * (size_t)precision;
         const size_t offset = words * sizeof(uint64_t);
-        snrt_dot_tail_word(&in0, (const uint8_t*)a + offset, bytes);
-        snrt_dot_tail_word(&in1, (const uint8_t*)b + offset, bytes);
+        snrt_vec_tail_load(&in0, (const uint8_t*)a + offset, bytes);
+        snrt_vec_tail_load(&in1, (const uint8_t*)b + offset, bytes);
         snrt_dot_word(precision, acc, &in0, &in1, &a0);
     }
 
@@ -467,9 +432,10 @@ __attribute__((noinline, unused)) static bool snrt_dot_core_dispatch(
  * @note The FP pipeline is drained before returning, so the result is stored
  *       when the call returns.
  */
-inline __attribute__((always_inline)) bool snrt_vec_dot_core_l1(
-    const void* a, const void* b, void* result, size_t n, precision_t precision,
-    snrt_acc_t acc) {
+SNRT_VEC_INLINE bool snrt_vec_dot_core_l1(const void* a, const void* b,
+                                          void* result, size_t n,
+                                          precision_t precision,
+                                          snrt_acc_t acc) {
     // With a constant precision and mode, only the code of that configuration
     // is generated, in line. Otherwise, a call to the dispatcher.
     if (__builtin_constant_p(precision) && __builtin_constant_p(acc))
@@ -546,8 +512,8 @@ SNRT_VEC_INLINE bool snrt_dot_strided_impl(
 
     if (tail_bytes > 0) {
         uint64_t in0, in1;
-        snrt_dot_tail_word(&in0, tail_a, tail_bytes);
-        snrt_dot_tail_word(&in1, tail_b, tail_bytes);
+        snrt_vec_tail_load(&in0, tail_a, tail_bytes);
+        snrt_vec_tail_load(&in1, tail_b, tail_bytes);
         snrt_dot_word(precision, acc, &in0, &in1, &a0);
     }
 
@@ -721,9 +687,10 @@ __attribute__((noinline, unused)) static bool snrt_dot_padded_dispatch(
  *      vector of another core otherwise (see BANK_CONFLICTS.md).
  * @note When it returns, the result is available to every core.
  */
-inline __attribute__((always_inline)) bool snrt_vec_dot_cores_l1(
-    const void* a, const void* b, void* result, void* scratch, size_t n,
-    precision_t precision, snrt_acc_t acc, size_t cores_log2) {
+SNRT_VEC_INLINE bool snrt_vec_dot_cores_l1(const void* a, const void* b,
+                                           void* result, void* scratch,
+                                           size_t n, precision_t precision,
+                                           snrt_acc_t acc, size_t cores_log2) {
     // With a constant precision and mode, only the code of that configuration
     // is generated, in line. Otherwise, a call to the dispatcher.
     if (__builtin_constant_p(precision) && __builtin_constant_p(acc))
@@ -737,9 +704,9 @@ inline __attribute__((always_inline)) bool snrt_vec_dot_cores_l1(
  * @brief Dot product of two vectors in L1, across all the compute cores of the
  *        cluster: snrt_vec_dot_cores_l1() with eight cores.
  */
-inline __attribute__((always_inline)) bool snrt_vec_dot_l1(
-    const void* a, const void* b, void* result, void* scratch, size_t n,
-    precision_t precision, snrt_acc_t acc) {
+SNRT_VEC_INLINE bool snrt_vec_dot_l1(const void* a, const void* b, void* result,
+                                     void* scratch, size_t n,
+                                     precision_t precision, snrt_acc_t acc) {
     return snrt_vec_dot_cores_l1(a, b, result, scratch, n, precision, acc, 3);
 }
 
@@ -752,7 +719,7 @@ inline __attribute__((always_inline)) bool snrt_vec_dot_l1(
  *          one of them) when the length is not a whole number of words: the
  *          function never pads at run time.
  */
-inline __attribute__((always_inline)) bool snrt_vec_dot_padded_cores_l1(
+SNRT_VEC_INLINE bool snrt_vec_dot_padded_cores_l1(
     const void* a, const void* b, void* result, void* scratch, size_t words,
     precision_t precision, snrt_acc_t acc, size_t cores_log2) {
     if (__builtin_constant_p(precision) && __builtin_constant_p(acc))
@@ -765,9 +732,10 @@ inline __attribute__((always_inline)) bool snrt_vec_dot_padded_cores_l1(
 /**
  * @brief snrt_vec_dot_padded_cores_l1() with all eight compute cores.
  */
-inline __attribute__((always_inline)) bool snrt_vec_dot_padded_l1(
-    const void* a, const void* b, void* result, void* scratch, size_t words,
-    precision_t precision, snrt_acc_t acc) {
+SNRT_VEC_INLINE bool snrt_vec_dot_padded_l1(const void* a, const void* b,
+                                            void* result, void* scratch,
+                                            size_t words, precision_t precision,
+                                            snrt_acc_t acc) {
     return snrt_vec_dot_padded_cores_l1(a, b, result, scratch, words,
                                         precision, acc, 3);
 }

@@ -91,7 +91,7 @@ typedef enum {
  * @details Every operation exists for every precision, except division in FP8
  *          (the FP backend has no FP8 divider).
  */
-static inline bool snrt_vv_supported(snrt_vv_op_t op, precision_t precision) {
+SNRT_VEC_INLINE bool snrt_vv_supported(snrt_vv_op_t op, precision_t precision) {
     if (!snrt_vec_precision_valid(precision)) return false;
     if (op == SNRT_VV_DIV && precision == FP8) return false;
     return true;
@@ -104,8 +104,8 @@ static inline bool snrt_vv_supported(snrt_vv_op_t op, precision_t precision) {
  *          instruction; the other precisions use the packed one.
  * @pre The streams are set up (snrt_vec_stream_begin_2in()) and words > 0.
  */
-static inline void snrt_vv_stream(snrt_vv_op_t op, precision_t precision,
-                                  size_t words) {
+SNRT_VEC_INLINE void snrt_vv_stream(snrt_vv_op_t op, precision_t precision,
+                                    size_t words) {
     switch (op) {
         case SNRT_VV_ADD:
             SNRT_VV_BY_PRECISION(SNRT_VV_STREAM_ASM, "fadd.d", "vfadd.s",
@@ -154,8 +154,8 @@ static inline void snrt_vv_stream(snrt_vv_op_t op, precision_t precision,
  * @param out Pointer to the output word (eight-byte aligned, may equal in0 or
  *            in1).
  */
-static inline void snrt_vv_word(snrt_vv_op_t op, precision_t precision,
-                                const void* in0, const void* in1, void* out) {
+SNRT_VEC_INLINE void snrt_vv_word(snrt_vv_op_t op, precision_t precision,
+                                  const void* in0, const void* in1, void* out) {
     double x, y, o;
     switch (op) {
         case SNRT_VV_ADD:
@@ -205,9 +205,9 @@ static inline void snrt_vv_word(snrt_vv_op_t op, precision_t precision,
  *          temporary words, so no memory outside the n elements is read or
  *          written.
  */
-static inline bool snrt_vv_generic_core_l1(snrt_vv_op_t op, const void* a,
-                                           const void* b, void* c, size_t n,
-                                           precision_t precision) {
+SNRT_VEC_INLINE bool snrt_vv_generic_core_l1(snrt_vv_op_t op, const void* a,
+                                             const void* b, void* c, size_t n,
+                                             precision_t precision) {
     if (!snrt_vv_supported(op, precision)) return false;
 
     const size_t lanes = snrt_vec_lanes(precision);
@@ -231,15 +231,13 @@ static inline bool snrt_vv_generic_core_l1(snrt_vv_op_t op, const void* a,
 
     // Remaining elements, through zero-padded words.
     if (tail > 0) {
-        __attribute__((aligned(8))) uint8_t in0[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-        __attribute__((aligned(8))) uint8_t in1[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-        __attribute__((aligned(8))) uint8_t out[8];
+        uint64_t in0, in1, out;
         const size_t bytes = tail * (size_t)precision;
         const size_t offset = words * sizeof(uint64_t);
-        memcpy(in0, (const uint8_t*)a + offset, bytes);
-        memcpy(in1, (const uint8_t*)b + offset, bytes);
-        snrt_vv_word(op, precision, in0, in1, out);
-        memcpy((uint8_t*)c + offset, out, bytes);
+        snrt_vec_tail_load(&in0, (const uint8_t*)a + offset, bytes);
+        snrt_vec_tail_load(&in1, (const uint8_t*)b + offset, bytes);
+        snrt_vv_word(op, precision, &in0, &in1, &out);
+        snrt_vec_tail_store((uint8_t*)c + offset, &out, bytes);
     }
 
     snrt_fpu_fence();
@@ -255,9 +253,9 @@ static inline bool snrt_vv_generic_core_l1(snrt_vv_op_t op, const void* a,
  *          word. Each core runs snrt_vv_generic_core_l1() on its range. Cores
  *          that are given no work return immediately.
  */
-static inline bool snrt_vv_generic_l1(snrt_vv_op_t op, const void* a,
-                                      const void* b, void* c, size_t n,
-                                      precision_t precision) {
+SNRT_VEC_INLINE bool snrt_vv_generic_l1(snrt_vv_op_t op, const void* a,
+                                        const void* b, void* c, size_t n,
+                                        precision_t precision) {
     if (!snrt_vv_supported(op, precision)) return false;
     if (!snrt_is_compute_core()) return true;
 
@@ -313,8 +311,8 @@ static inline bool snrt_vv_generic_l1(snrt_vv_op_t op, const void* a,
  * @note The FP pipeline is drained before returning, so this core's stores are
  *       complete. The caller synchronizes with other cores and DMA transfers.
  */
-inline bool snrt_vv_add_core_l1(const void* a, const void* b, void* c,
-                                size_t n, precision_t precision) {
+SNRT_VEC_INLINE bool snrt_vv_add_core_l1(const void* a, const void* b, void* c,
+                                         size_t n, precision_t precision) {
     return snrt_vv_generic_core_l1(SNRT_VV_ADD, a, b, c, n, precision);
 }
 
@@ -340,8 +338,8 @@ inline bool snrt_vv_add_core_l1(const void* a, const void* b, void* c,
  * @note There is no barrier inside. Before reading the result from another core
  *       or by DMA, synchronize with snrt_cluster_hw_barrier().
  */
-inline bool snrt_vv_add_l1(const void* a, const void* b, void* c, size_t n,
-                           precision_t precision) {
+SNRT_VEC_INLINE bool snrt_vv_add_l1(const void* a, const void* b, void* c,
+                                    size_t n, precision_t precision) {
     return snrt_vv_generic_l1(SNRT_VV_ADD, a, b, c, n, precision);
 }
 
@@ -357,8 +355,8 @@ inline bool snrt_vv_add_l1(const void* a, const void* b, void* c, size_t n,
  * @note Parameters, preconditions and the other notes: as in
  *       snrt_vv_add_core_l1().
  */
-inline bool snrt_vv_sub_core_l1(const void* a, const void* b, void* c,
-                                size_t n, precision_t precision) {
+SNRT_VEC_INLINE bool snrt_vv_sub_core_l1(const void* a, const void* b, void* c,
+                                         size_t n, precision_t precision) {
     return snrt_vv_generic_core_l1(SNRT_VV_SUB, a, b, c, n, precision);
 }
 
@@ -370,8 +368,8 @@ inline bool snrt_vv_sub_core_l1(const void* a, const void* b, void* c,
  * @note Parameters, preconditions and the other notes: as in
  *       snrt_vv_add_l1().
  */
-inline bool snrt_vv_sub_l1(const void* a, const void* b, void* c, size_t n,
-                           precision_t precision) {
+SNRT_VEC_INLINE bool snrt_vv_sub_l1(const void* a, const void* b, void* c,
+                                    size_t n, precision_t precision) {
     return snrt_vv_generic_l1(SNRT_VV_SUB, a, b, c, n, precision);
 }
 
@@ -387,8 +385,8 @@ inline bool snrt_vv_sub_l1(const void* a, const void* b, void* c, size_t n,
  * @note Parameters, preconditions and the other notes: as in
  *       snrt_vv_add_core_l1().
  */
-inline bool snrt_vv_mul_core_l1(const void* a, const void* b, void* c,
-                                size_t n, precision_t precision) {
+SNRT_VEC_INLINE bool snrt_vv_mul_core_l1(const void* a, const void* b, void* c,
+                                         size_t n, precision_t precision) {
     return snrt_vv_generic_core_l1(SNRT_VV_MUL, a, b, c, n, precision);
 }
 
@@ -400,8 +398,8 @@ inline bool snrt_vv_mul_core_l1(const void* a, const void* b, void* c,
  * @note Parameters, preconditions and the other notes: as in
  *       snrt_vv_add_l1().
  */
-inline bool snrt_vv_mul_l1(const void* a, const void* b, void* c, size_t n,
-                           precision_t precision) {
+SNRT_VEC_INLINE bool snrt_vv_mul_l1(const void* a, const void* b, void* c,
+                                    size_t n, precision_t precision) {
     return snrt_vv_generic_l1(SNRT_VV_MUL, a, b, c, n, precision);
 }
 
@@ -423,8 +421,8 @@ inline bool snrt_vv_mul_l1(const void* a, const void* b, void* c, size_t n,
  * @note Parameters, preconditions and the other notes: as in
  *       snrt_vv_add_core_l1().
  */
-inline bool snrt_vv_div_core_l1(const void* a, const void* b, void* c,
-                                size_t n, precision_t precision) {
+SNRT_VEC_INLINE bool snrt_vv_div_core_l1(const void* a, const void* b, void* c,
+                                         size_t n, precision_t precision) {
     return snrt_vv_generic_core_l1(SNRT_VV_DIV, a, b, c, n, precision);
 }
 
@@ -437,8 +435,8 @@ inline bool snrt_vv_div_core_l1(const void* a, const void* b, void* c,
  * @note Parameters, preconditions and the other notes: as in
  *       snrt_vv_add_l1().
  */
-inline bool snrt_vv_div_l1(const void* a, const void* b, void* c, size_t n,
-                           precision_t precision) {
+SNRT_VEC_INLINE bool snrt_vv_div_l1(const void* a, const void* b, void* c,
+                                    size_t n, precision_t precision) {
     return snrt_vv_generic_l1(SNRT_VV_DIV, a, b, c, n, precision);
 }
 
@@ -457,8 +455,8 @@ inline bool snrt_vv_div_l1(const void* a, const void* b, void* c, size_t n,
  * @note Parameters, return value, preconditions and the other notes: as in
  *       snrt_vv_add_core_l1().
  */
-inline bool snrt_vv_min_core_l1(const void* a, const void* b, void* c,
-                                size_t n, precision_t precision) {
+SNRT_VEC_INLINE bool snrt_vv_min_core_l1(const void* a, const void* b, void* c,
+                                         size_t n, precision_t precision) {
     return snrt_vv_generic_core_l1(SNRT_VV_MIN, a, b, c, n, precision);
 }
 
@@ -470,8 +468,8 @@ inline bool snrt_vv_min_core_l1(const void* a, const void* b, void* c,
  * @note Parameters, return value, preconditions and the other notes: as in
  *       snrt_vv_add_l1().
  */
-inline bool snrt_vv_min_l1(const void* a, const void* b, void* c, size_t n,
-                           precision_t precision) {
+SNRT_VEC_INLINE bool snrt_vv_min_l1(const void* a, const void* b, void* c,
+                                    size_t n, precision_t precision) {
     return snrt_vv_generic_l1(SNRT_VV_MIN, a, b, c, n, precision);
 }
 
@@ -490,8 +488,8 @@ inline bool snrt_vv_min_l1(const void* a, const void* b, void* c, size_t n,
  * @note Parameters, return value, preconditions and the other notes: as in
  *       snrt_vv_add_core_l1().
  */
-inline bool snrt_vv_max_core_l1(const void* a, const void* b, void* c,
-                                size_t n, precision_t precision) {
+SNRT_VEC_INLINE bool snrt_vv_max_core_l1(const void* a, const void* b, void* c,
+                                         size_t n, precision_t precision) {
     return snrt_vv_generic_core_l1(SNRT_VV_MAX, a, b, c, n, precision);
 }
 
@@ -503,8 +501,8 @@ inline bool snrt_vv_max_core_l1(const void* a, const void* b, void* c,
  * @note Parameters, return value, preconditions and the other notes: as in
  *       snrt_vv_add_l1().
  */
-inline bool snrt_vv_max_l1(const void* a, const void* b, void* c, size_t n,
-                           precision_t precision) {
+SNRT_VEC_INLINE bool snrt_vv_max_l1(const void* a, const void* b, void* c,
+                                    size_t n, precision_t precision) {
     return snrt_vv_generic_l1(SNRT_VV_MAX, a, b, c, n, precision);
 }
 
@@ -618,8 +616,8 @@ inline bool snrt_vv_max_l1(const void* a, const void* b, void* c, size_t n,
  * @pre The three streams are set up (snrt_vec_stream_begin_2in(x, y, z,
  *      words)) and words > 0.
  */
-static inline void snrt_vv_axpy_stream(precision_t precision, size_t words,
-                                       double scalar) {
+SNRT_VEC_INLINE void snrt_vv_axpy_stream(precision_t precision, size_t words,
+                                         double scalar) {
     if (precision == FP64) {
         SNRT_AXPY_STREAM_FP64_ASM();
         return;
@@ -634,9 +632,9 @@ static inline void snrt_vv_axpy_stream(precision_t precision, size_t words,
  * @brief out = scalar * in0 + in1 for one 64-bit word, without streaming.
  * @param out May equal in1.
  */
-static inline void snrt_vv_axpy_word(precision_t precision, const void* in0,
-                                     const void* in1, void* out,
-                                     double scalar) {
+SNRT_VEC_INLINE void snrt_vv_axpy_word(precision_t precision, const void* in0,
+                                       const void* in1, void* out,
+                                       double scalar) {
     double x, y, t, o;
     if (precision == FP64) {
         SNRT_AXPY_WORD_FP64_ASM();
@@ -684,9 +682,9 @@ static inline void snrt_vv_axpy_word(precision_t precision, const void* in0,
  * @note The FP pipeline is drained before returning, so this core's stores are
  *       complete. The caller synchronizes with other cores and DMA transfers.
  */
-inline bool snrt_vv_axpy_core_l1(const void* alpha, const void* x,
-                                 const void* y, void* z, size_t n,
-                                 precision_t precision) {
+SNRT_VEC_INLINE bool snrt_vv_axpy_core_l1(const void* alpha, const void* x,
+                                          const void* y, void* z, size_t n,
+                                          precision_t precision) {
     if (!snrt_vec_precision_valid(precision)) return false;
 
     const size_t lanes = snrt_vec_lanes(precision);
@@ -712,15 +710,13 @@ inline bool snrt_vv_axpy_core_l1(const void* alpha, const void* x,
 
     // Remaining elements, through zero-padded words.
     if (tail > 0) {
-        __attribute__((aligned(8))) uint8_t in0[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-        __attribute__((aligned(8))) uint8_t in1[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-        __attribute__((aligned(8))) uint8_t out[8];
+        uint64_t in0, in1, out;
         const size_t bytes = tail * (size_t)precision;
         const size_t offset = words * sizeof(uint64_t);
-        memcpy(in0, (const uint8_t*)x + offset, bytes);
-        memcpy(in1, (const uint8_t*)y + offset, bytes);
-        snrt_vv_axpy_word(precision, in0, in1, out, scalar);
-        memcpy((uint8_t*)z + offset, out, bytes);
+        snrt_vec_tail_load(&in0, (const uint8_t*)x + offset, bytes);
+        snrt_vec_tail_load(&in1, (const uint8_t*)y + offset, bytes);
+        snrt_vv_axpy_word(precision, &in0, &in1, &out, scalar);
+        snrt_vec_tail_store((uint8_t*)z + offset, &out, bytes);
     }
 
     snrt_fpu_fence();
@@ -744,8 +740,9 @@ inline bool snrt_vv_axpy_core_l1(const void* alpha, const void* x,
  * @note There is no barrier inside. Before reading the result from another
  *       core or by DMA, synchronize with snrt_cluster_hw_barrier().
  */
-inline bool snrt_vv_axpy_l1(const void* alpha, const void* x, const void* y,
-                            void* z, size_t n, precision_t precision) {
+SNRT_VEC_INLINE bool snrt_vv_axpy_l1(const void* alpha, const void* x,
+                                     const void* y, void* z, size_t n,
+                                     precision_t precision) {
     if (!snrt_vec_precision_valid(precision)) return false;
     if (!snrt_is_compute_core()) return true;
 
