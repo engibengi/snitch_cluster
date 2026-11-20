@@ -1,7 +1,9 @@
 // Cycle counts of the element-wise operations on data in L1 (not a pass/fail
 // test): vector + vector (add, as the representative of add, sub, mul, div,
 // min, max), vector + scalar (add) and axpy (z = alpha * x + y), for every
-// precision. See paper_notes/PENDING.md ("vs, vv and axpy").
+// precision. Shared by vector_vector_latency_l1.c, vector_scalar_latency_l1.c
+// and vector_axpy_latency_l1.c, which choose the operation (LAT_VV, LAT_VS,
+// LAT_AXPY) so that each run is short.
 //
 // It is the measurement that comes before rebuilding these functions, as it was
 // done for the dot product (vector_dot_latency_l1.c): how much of a call is
@@ -26,6 +28,10 @@
 //   hand8i:  hand-written, 8 cores, interleaved (core c takes the words c,
 //            c + 8, ...: a stream with a stride of 8 words), the split that
 //            removed the bank conflicts of the dot product.
+//   pad1, pad8: the caller-padded library functions on one core and on eight
+//            (the length is given in words, the partial last word of the tail
+//            rows counts as a word, and no tail code runs). Compare pad1 with
+//            lib1 and pad8 with lib8 on the tail rows: that is the gain.
 // A call is a separate non-inlined function in all columns, so the call
 // overhead is the same in all of them. Each cell is the mean of REPS calls
 // after one warm-up call. The data is not initialized: timing does not depend
@@ -233,6 +239,26 @@ __attribute__((noinline)) static void lib8(const uint8_t* a, const uint8_t* b,
     else snrt_vv_axpy_l1(s, a, b, c, n, P);
 }
 
+// The caller-padded functions, one core and eight: `words` is a number of
+// WORDS (a partial last word is counted as a whole one: the buffers have room).
+template <precision_t P, op_t OP>
+__attribute__((noinline)) static void pad1(const uint8_t* a, const uint8_t* b,
+                                           uint8_t* c, const void* s,
+                                           size_t words) {
+    if (OP == OP_VV) snrt_vv_add_padded_core_l1(a, b, c, words, P);
+    else if (OP == OP_VS) snrt_vs_add_padded_core_l1(a, s, c, words, P);
+    else snrt_vv_axpy_padded_core_l1(s, a, b, c, words, P);
+}
+
+template <precision_t P, op_t OP>
+__attribute__((noinline)) static void pad8(const uint8_t* a, const uint8_t* b,
+                                           uint8_t* c, const void* s,
+                                           size_t words) {
+    if (OP == OP_VV) snrt_vv_add_padded_l1(a, b, c, words, P);
+    else if (OP == OP_VS) snrt_vs_add_padded_l1(a, s, c, words, P);
+    else snrt_vv_axpy_padded_l1(s, a, b, c, words, P);
+}
+
 //------------------------------------------------------------------------------
 // Timing
 //------------------------------------------------------------------------------
@@ -280,7 +306,7 @@ static void table(const char* pname, const char* opname, const uint8_t* a,
     const int core0 = snrt_cluster_core_idx() == 0;
     if (core0)
         printf("%s %s\n  words tail   lib1   libR  hand1 |   lib8 hand8c "
-               "hand8i\n",
+               "hand8i |   pad1   pad8\n",
                pname, opname);
     for (unsigned r = 0; r < NROWS; ++r) {
         const unsigned words = rows_list[r].words;
@@ -297,7 +323,14 @@ static void table(const char* pname, const char* opname, const uint8_t* a,
             if (!tail)
                 t_hand1 = time_single([&] { hand1<P, OP>(a, b, c, s, words); });
         }
+        // The padded functions: the partial last word counts as a word.
+        const size_t pwords = words + tail;
+        unsigned t_pad1 = 0;
+        if (core0)
+            t_pad1 = time_single([&] { pad1<P, OP>(a, b, c, s, pwords); });
         snrt_cluster_hw_barrier();
+        const unsigned t_pad8 =
+            time_multi([&] { pad8<P, OP>(a, b, c, s, pwords); });
         const unsigned t_lib8 =
             time_multi([&] { lib8<P, OP>(a, b, c, s, n); });
         unsigned t_h8c = 0, t_h8i = 0;
@@ -307,9 +340,10 @@ static void table(const char* pname, const char* opname, const uint8_t* a,
         }
         if (core0) {
             printf("  %5u %4u  %5u  %5u ", words, tail, t_lib1, t_libR);
-            if (tail) printf("     - |  %6u      -      -\n", t_lib8);
+            if (tail) printf("     - |  %6u      -      -", t_lib8);
             else
-                printf(" %5u |  %6u %6u %6u\n", t_hand1, t_lib8, t_h8c, t_h8i);
+                printf(" %5u |  %6u %6u %6u", t_hand1, t_lib8, t_h8c, t_h8i);
+            printf(" | %6u %6u\n", t_pad1, t_pad8);
         }
     }
     if (core0) printf("\n");
@@ -318,9 +352,15 @@ static void table(const char* pname, const char* opname, const uint8_t* a,
 template <precision_t P>
 static void all_ops(const char* pname, const uint8_t* a, const uint8_t* b,
                     uint8_t* c, const void* s) {
+#if LAT_VV
     table<P, OP_VV>(pname, "vector + vector (add)", a, b, c, s);
+#endif
+#if LAT_VS
     table<P, OP_VS>(pname, "vector + scalar (add)", a, b, c, s);
+#endif
+#if LAT_AXPY
     table<P, OP_AXPY>(pname, "axpy", a, b, c, s);
+#endif
 }
 
 int main() {
