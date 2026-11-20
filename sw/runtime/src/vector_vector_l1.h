@@ -198,39 +198,69 @@ SNRT_VEC_INLINE void snrt_vv_word(snrt_vv_op_t op, precision_t precision,
 }
 
 /**
- * @brief Apply an operation to two vectors in L1, on the calling core only.
- *        The public snrt_vv_<op>_core_l1() call this.
- * @details Whole 64-bit words are processed by an SSR/FREP loop. Elements that
- *          do not fill a whole word are processed through zero-padded
- *          temporary words, so no memory outside the n elements is read or
- *          written.
+ * @brief Apply an operation to the words of a vector slice: whole 64-bit words,
+ *        @p stride_bytes apart, streamed by an SSR/FREP loop.
  */
-SNRT_VEC_INLINE bool snrt_vv_generic_core_l1(snrt_vv_op_t op, const void* a,
-                                             const void* b, void* c, size_t n,
-                                             precision_t precision) {
-    if (!snrt_vv_supported(op, precision)) return false;
-
-    const size_t lanes = snrt_vec_lanes(precision);
-    const size_t words = n / lanes;
-    const size_t tail = n % lanes;
-
-    // Whole words, streamed.
-    if (words > 0) {
+SNRT_VEC_INLINE void snrt_vv_words(snrt_vv_op_t op, precision_t precision,
+                                   const void* a, const void* b, void* c,
+                                   size_t words, size_t stride_bytes) {
 #ifdef SNRT_SUPPORTS_FREP
-        snrt_vec_stream_begin_2in(a, b, c, words);
-        snrt_vv_stream(op, precision, words);
-        snrt_vec_stream_end();
+    snrt_vec_stream_begin_2in_strided(a, b, c, words, stride_bytes);
+    snrt_vv_stream(op, precision, words);
+    snrt_vec_stream_end();
 #else
-        for (size_t i = 0; i < words; ++i)
-            snrt_vv_word(op, precision,
-                         (const uint8_t*)a + i * sizeof(uint64_t),
-                         (const uint8_t*)b + i * sizeof(uint64_t),
-                         (uint8_t*)c + i * sizeof(uint64_t));
+    for (size_t i = 0; i < words; ++i)
+        snrt_vv_word(op, precision, (const uint8_t*)a + i * stride_bytes,
+                     (const uint8_t*)b + i * stride_bytes,
+                     (uint8_t*)c + i * stride_bytes);
 #endif
+}
+
+/**
+ * @brief Implementation of every vector-vector function of this file.
+ * @details The words of the vector are dealt out to 2^cores_log2 cores in
+ *          turns: core `core` takes words core, core + cores, core + 2 cores,
+ *          and so on (stride cores * 8 bytes). The cores then read and write
+ *          different banks of the memory at the same time, and the split costs
+ *          shifts and a mask, no division. The elements after the last whole
+ *          word (the partial word), if any, go to the core whose turn it is,
+ *          through zero-padded temporary words, so no memory outside the n
+ *          elements is read or written.
+ *
+ *          With padded set, n is a number of WORDS, the last of which may be
+ *          partial: the caller has made room for the whole word, so there is
+ *          no tail code and the partial word is processed like the others (the
+ *          elements after the n-th element of the vector are read and written).
+ *
+ *          One core on its own: core = 0, cores_log2 = 0. A core with an index
+ *          of 2^cores_log2 or more (the DMA core) does nothing.
+ * @pre For constants in core, cores_log2 and padded, the code folds to the
+ *      specialised one. The calling core supports the instruction.
+ */
+SNRT_VEC_INLINE bool snrt_vv_impl(snrt_vv_op_t op, const void* a, const void* b,
+                                  void* c, size_t n, precision_t precision,
+                                  size_t core, size_t cores_log2,
+                                  bool padded) {
+    if (!snrt_vv_supported(op, precision)) return false;
+    if (core >= ((size_t)1 << cores_log2)) return true;
+
+    const size_t lanes_log2 = snrt_vec_lanes_log2(precision);
+    const size_t words = padded ? n : n >> lanes_log2;
+    const size_t tail = padded ? 0 : n & (((size_t)1 << lanes_log2) - 1);
+    const size_t mask = ((size_t)1 << cores_log2) - 1;
+
+    // Words core, core + cores, ... below `words`.
+    const size_t count = words > core ? ((words - core - 1) >> cores_log2) + 1
+                                      : 0;
+    if (count > 0) {
+        const size_t offset = core * sizeof(uint64_t);
+        snrt_vv_words(op, precision, (const uint8_t*)a + offset,
+                      (const uint8_t*)b + offset, (uint8_t*)c + offset, count,
+                      sizeof(uint64_t) << cores_log2);
     }
 
-    // Remaining elements, through zero-padded words.
-    if (tail > 0) {
+    // The partial word is the next one in the turns.
+    if (tail > 0 && (words & mask) == core) {
         uint64_t in0, in1, out;
         const size_t bytes = tail * (size_t)precision;
         const size_t offset = words * sizeof(uint64_t);
@@ -244,36 +274,35 @@ SNRT_VEC_INLINE bool snrt_vv_generic_core_l1(snrt_vv_op_t op, const void* a,
     return true;
 }
 
-/**
- * @brief Apply an operation to two vectors in L1, across the compute cores of
- *        the cluster. The public snrt_vv_<op>_l1() call this.
- * @details The whole 64-bit words are divided among the compute cores in
- *          contiguous ranges (the first n_words % cores cores get one more);
- *          the last core also takes the elements that do not fill a whole
- *          word. Each core runs snrt_vv_generic_core_l1() on its range. Cores
- *          that are given no work return immediately.
- */
-SNRT_VEC_INLINE bool snrt_vv_generic_l1(snrt_vv_op_t op, const void* a,
-                                        const void* b, void* c, size_t n,
-                                        precision_t precision) {
-    if (!snrt_vv_supported(op, precision)) return false;
-    if (!snrt_is_compute_core()) return true;
+// For a precision known only at run time: one non-inlined copy per operation,
+// holding four copies of snrt_vv_impl() specialised for the precisions, chosen
+// by one comparison chain (a switch would load its table from L3).
+#define SNRT_VV_DEFINE_DISPATCH(NAME, OP)                                    \
+    __attribute__((noinline, unused)) static bool snrt_vv_##NAME##_dispatch( \
+        const void* a, const void* b, void* c, size_t n,                     \
+        precision_t precision, size_t core, size_t cores_log2,               \
+        bool padded) {                                                       \
+        SNRT_VEC_BY_PRECISION(                                               \
+            P, snrt_vv_impl(OP, a, b, c, n, P, core, cores_log2, padded));   \
+    }
+SNRT_VV_DEFINE_DISPATCH(add, SNRT_VV_ADD)
+SNRT_VV_DEFINE_DISPATCH(sub, SNRT_VV_SUB)
+SNRT_VV_DEFINE_DISPATCH(mul, SNRT_VV_MUL)
+SNRT_VV_DEFINE_DISPATCH(div, SNRT_VV_DIV)
+SNRT_VV_DEFINE_DISPATCH(min, SNRT_VV_MIN)
+SNRT_VV_DEFINE_DISPATCH(max, SNRT_VV_MAX)
+#undef SNRT_VV_DEFINE_DISPATCH
 
-    const size_t lanes = snrt_vec_lanes(precision);
-    const size_t cores = snrt_cluster_compute_core_num();
-    const size_t core = snrt_cluster_core_idx();
-
-    size_t first, count;
-    snrt_vec_split(n / lanes, core, cores, &first, &count);
-
-    size_t elems = count * lanes;
-    if (core == cores - 1) elems += n % lanes;  // sub-word tail
-
-    const size_t offset = first * sizeof(uint64_t);
-    return snrt_vv_generic_core_l1(op, (const uint8_t*)a + offset,
-                                   (const uint8_t*)b + offset,
-                                   (uint8_t*)c + offset, elems, precision);
-}
+// Body of a public function: inline for a constant precision, otherwise the
+// call of the dispatcher of the operation. Expects a, b, c, n, precision.
+#define SNRT_VV_ROUTE(NAME, OP, CORE, LOG2, PADDED)                          \
+    do {                                                                     \
+        if (__builtin_constant_p(precision))                                 \
+            return snrt_vv_impl(OP, a, b, c, n, precision, CORE, LOG2,       \
+                                PADDED);                                     \
+        return snrt_vv_##NAME##_dispatch(a, b, c, n, precision, CORE, LOG2,  \
+                                         PADDED);                            \
+    } while (0)
 
 #undef SNRT_VV_STREAM_ASM
 #undef SNRT_VV_WORD_ASM
@@ -313,16 +342,16 @@ SNRT_VEC_INLINE bool snrt_vv_generic_l1(snrt_vv_op_t op, const void* a,
  */
 SNRT_VEC_INLINE bool snrt_vv_add_core_l1(const void* a, const void* b, void* c,
                                          size_t n, precision_t precision) {
-    return snrt_vv_generic_core_l1(SNRT_VV_ADD, a, b, c, n, precision);
+    SNRT_VV_ROUTE(add, SNRT_VV_ADD, 0, 0, false);
 }
 
 /**
  * @brief Add two vectors in L1 element by element, across the compute cores of
  *        the cluster.
- * @details Same operation as snrt_vv_add_core_l1(). The whole 64-bit words are
- *          divided among the compute cores in contiguous ranges (the first
- *          n_words % cores cores get one more); the last core also takes the
- *          elements that do not fill a whole word. Cores that are given no
+ * @details Same operation as snrt_vv_add_core_l1(). The 64-bit words are dealt out to
+ *          the eight compute cores in turns (core c takes words c, c + 8,
+ *          c + 16, ...), which avoids bank conflicts; the partial last word,
+ *          if any, goes to the core whose turn it is. Cores that are given no
  *          work return immediately. No core touches another core's elements.
  * @param a Pointer to the first element of the first input vector.
  * @param b Pointer to the first element of the second input vector.
@@ -340,7 +369,37 @@ SNRT_VEC_INLINE bool snrt_vv_add_core_l1(const void* a, const void* b, void* c,
  */
 SNRT_VEC_INLINE bool snrt_vv_add_l1(const void* a, const void* b, void* c,
                                     size_t n, precision_t precision) {
-    return snrt_vv_generic_l1(SNRT_VV_ADD, a, b, c, n, precision);
+    SNRT_VV_ROUTE(add, SNRT_VV_ADD, snrt_vec_core_idx(),
+                  SNRT_VEC_COMPUTE_CORES_LOG2, false);
+}
+
+/**
+ * @brief snrt_vv_add_core_l1() on vectors that fill whole 64-bit words, on the
+ *        calling core only. Caller-padded variant.
+ * @details n is a number of WORDS. If the vectors have a partial last word,
+ *          the caller has made room for all of it: the elements after the
+ *          vector's last one are read, and written to c, like the others (the
+ *          result of them is meaningless). No tail code runs, which saves 16 to
+ *          95 cycles per call when there is a partial word.
+ * @pre As snrt_vv_add_core_l1(), with a, b and c covering n words.
+ */
+SNRT_VEC_INLINE bool snrt_vv_add_padded_core_l1(const void* a, const void* b,
+                                                 void* c, size_t n,
+                                                 precision_t precision) {
+    SNRT_VV_ROUTE(add, SNRT_VV_ADD, 0, 0, true);
+}
+
+/**
+ * @brief snrt_vv_add_l1() on vectors that fill whole 64-bit words, across the
+ *        compute cores. Caller-padded variant.
+ * @details n is a number of WORDS; see snrt_vv_add_padded_core_l1().
+ * @pre As snrt_vv_add_l1(), with a, b and c covering n words.
+ */
+SNRT_VEC_INLINE bool snrt_vv_add_padded_l1(const void* a, const void* b,
+                                            void* c, size_t n,
+                                            precision_t precision) {
+    SNRT_VV_ROUTE(add, SNRT_VV_ADD, snrt_vec_core_idx(),
+                  SNRT_VEC_COMPUTE_CORES_LOG2, true);
 }
 
 //------------------------------------------------------------------------------
@@ -357,7 +416,7 @@ SNRT_VEC_INLINE bool snrt_vv_add_l1(const void* a, const void* b, void* c,
  */
 SNRT_VEC_INLINE bool snrt_vv_sub_core_l1(const void* a, const void* b, void* c,
                                          size_t n, precision_t precision) {
-    return snrt_vv_generic_core_l1(SNRT_VV_SUB, a, b, c, n, precision);
+    SNRT_VV_ROUTE(sub, SNRT_VV_SUB, 0, 0, false);
 }
 
 /**
@@ -370,7 +429,37 @@ SNRT_VEC_INLINE bool snrt_vv_sub_core_l1(const void* a, const void* b, void* c,
  */
 SNRT_VEC_INLINE bool snrt_vv_sub_l1(const void* a, const void* b, void* c,
                                     size_t n, precision_t precision) {
-    return snrt_vv_generic_l1(SNRT_VV_SUB, a, b, c, n, precision);
+    SNRT_VV_ROUTE(sub, SNRT_VV_SUB, snrt_vec_core_idx(),
+                  SNRT_VEC_COMPUTE_CORES_LOG2, false);
+}
+
+/**
+ * @brief snrt_vv_sub_core_l1() on vectors that fill whole 64-bit words, on the
+ *        calling core only. Caller-padded variant.
+ * @details n is a number of WORDS. If the vectors have a partial last word,
+ *          the caller has made room for all of it: the elements after the
+ *          vector's last one are read, and written to c, like the others (the
+ *          result of them is meaningless). No tail code runs, which saves 16 to
+ *          95 cycles per call when there is a partial word.
+ * @pre As snrt_vv_sub_core_l1(), with a, b and c covering n words.
+ */
+SNRT_VEC_INLINE bool snrt_vv_sub_padded_core_l1(const void* a, const void* b,
+                                                 void* c, size_t n,
+                                                 precision_t precision) {
+    SNRT_VV_ROUTE(sub, SNRT_VV_SUB, 0, 0, true);
+}
+
+/**
+ * @brief snrt_vv_sub_l1() on vectors that fill whole 64-bit words, across the
+ *        compute cores. Caller-padded variant.
+ * @details n is a number of WORDS; see snrt_vv_sub_padded_core_l1().
+ * @pre As snrt_vv_sub_l1(), with a, b and c covering n words.
+ */
+SNRT_VEC_INLINE bool snrt_vv_sub_padded_l1(const void* a, const void* b,
+                                            void* c, size_t n,
+                                            precision_t precision) {
+    SNRT_VV_ROUTE(sub, SNRT_VV_SUB, snrt_vec_core_idx(),
+                  SNRT_VEC_COMPUTE_CORES_LOG2, true);
 }
 
 //------------------------------------------------------------------------------
@@ -387,7 +476,7 @@ SNRT_VEC_INLINE bool snrt_vv_sub_l1(const void* a, const void* b, void* c,
  */
 SNRT_VEC_INLINE bool snrt_vv_mul_core_l1(const void* a, const void* b, void* c,
                                          size_t n, precision_t precision) {
-    return snrt_vv_generic_core_l1(SNRT_VV_MUL, a, b, c, n, precision);
+    SNRT_VV_ROUTE(mul, SNRT_VV_MUL, 0, 0, false);
 }
 
 /**
@@ -400,7 +489,37 @@ SNRT_VEC_INLINE bool snrt_vv_mul_core_l1(const void* a, const void* b, void* c,
  */
 SNRT_VEC_INLINE bool snrt_vv_mul_l1(const void* a, const void* b, void* c,
                                     size_t n, precision_t precision) {
-    return snrt_vv_generic_l1(SNRT_VV_MUL, a, b, c, n, precision);
+    SNRT_VV_ROUTE(mul, SNRT_VV_MUL, snrt_vec_core_idx(),
+                  SNRT_VEC_COMPUTE_CORES_LOG2, false);
+}
+
+/**
+ * @brief snrt_vv_mul_core_l1() on vectors that fill whole 64-bit words, on the
+ *        calling core only. Caller-padded variant.
+ * @details n is a number of WORDS. If the vectors have a partial last word,
+ *          the caller has made room for all of it: the elements after the
+ *          vector's last one are read, and written to c, like the others (the
+ *          result of them is meaningless). No tail code runs, which saves 16 to
+ *          95 cycles per call when there is a partial word.
+ * @pre As snrt_vv_mul_core_l1(), with a, b and c covering n words.
+ */
+SNRT_VEC_INLINE bool snrt_vv_mul_padded_core_l1(const void* a, const void* b,
+                                                 void* c, size_t n,
+                                                 precision_t precision) {
+    SNRT_VV_ROUTE(mul, SNRT_VV_MUL, 0, 0, true);
+}
+
+/**
+ * @brief snrt_vv_mul_l1() on vectors that fill whole 64-bit words, across the
+ *        compute cores. Caller-padded variant.
+ * @details n is a number of WORDS; see snrt_vv_mul_padded_core_l1().
+ * @pre As snrt_vv_mul_l1(), with a, b and c covering n words.
+ */
+SNRT_VEC_INLINE bool snrt_vv_mul_padded_l1(const void* a, const void* b,
+                                            void* c, size_t n,
+                                            precision_t precision) {
+    SNRT_VV_ROUTE(mul, SNRT_VV_MUL, snrt_vec_core_idx(),
+                  SNRT_VEC_COMPUTE_CORES_LOG2, true);
 }
 
 //------------------------------------------------------------------------------
@@ -423,7 +542,7 @@ SNRT_VEC_INLINE bool snrt_vv_mul_l1(const void* a, const void* b, void* c,
  */
 SNRT_VEC_INLINE bool snrt_vv_div_core_l1(const void* a, const void* b, void* c,
                                          size_t n, precision_t precision) {
-    return snrt_vv_generic_core_l1(SNRT_VV_DIV, a, b, c, n, precision);
+    SNRT_VV_ROUTE(div, SNRT_VV_DIV, 0, 0, false);
 }
 
 /**
@@ -437,7 +556,37 @@ SNRT_VEC_INLINE bool snrt_vv_div_core_l1(const void* a, const void* b, void* c,
  */
 SNRT_VEC_INLINE bool snrt_vv_div_l1(const void* a, const void* b, void* c,
                                     size_t n, precision_t precision) {
-    return snrt_vv_generic_l1(SNRT_VV_DIV, a, b, c, n, precision);
+    SNRT_VV_ROUTE(div, SNRT_VV_DIV, snrt_vec_core_idx(),
+                  SNRT_VEC_COMPUTE_CORES_LOG2, false);
+}
+
+/**
+ * @brief snrt_vv_div_core_l1() on vectors that fill whole 64-bit words, on the
+ *        calling core only. Caller-padded variant.
+ * @details n is a number of WORDS. If the vectors have a partial last word,
+ *          the caller has made room for all of it: the elements after the
+ *          vector's last one are read, and written to c, like the others (the
+ *          result of them is meaningless). No tail code runs, which saves 16 to
+ *          95 cycles per call when there is a partial word.
+ * @pre As snrt_vv_div_core_l1(), with a, b and c covering n words.
+ */
+SNRT_VEC_INLINE bool snrt_vv_div_padded_core_l1(const void* a, const void* b,
+                                                 void* c, size_t n,
+                                                 precision_t precision) {
+    SNRT_VV_ROUTE(div, SNRT_VV_DIV, 0, 0, true);
+}
+
+/**
+ * @brief snrt_vv_div_l1() on vectors that fill whole 64-bit words, across the
+ *        compute cores. Caller-padded variant.
+ * @details n is a number of WORDS; see snrt_vv_div_padded_core_l1().
+ * @pre As snrt_vv_div_l1(), with a, b and c covering n words.
+ */
+SNRT_VEC_INLINE bool snrt_vv_div_padded_l1(const void* a, const void* b,
+                                            void* c, size_t n,
+                                            precision_t precision) {
+    SNRT_VV_ROUTE(div, SNRT_VV_DIV, snrt_vec_core_idx(),
+                  SNRT_VEC_COMPUTE_CORES_LOG2, true);
 }
 
 //------------------------------------------------------------------------------
@@ -457,7 +606,7 @@ SNRT_VEC_INLINE bool snrt_vv_div_l1(const void* a, const void* b, void* c,
  */
 SNRT_VEC_INLINE bool snrt_vv_min_core_l1(const void* a, const void* b, void* c,
                                          size_t n, precision_t precision) {
-    return snrt_vv_generic_core_l1(SNRT_VV_MIN, a, b, c, n, precision);
+    SNRT_VV_ROUTE(min, SNRT_VV_MIN, 0, 0, false);
 }
 
 /**
@@ -470,7 +619,37 @@ SNRT_VEC_INLINE bool snrt_vv_min_core_l1(const void* a, const void* b, void* c,
  */
 SNRT_VEC_INLINE bool snrt_vv_min_l1(const void* a, const void* b, void* c,
                                     size_t n, precision_t precision) {
-    return snrt_vv_generic_l1(SNRT_VV_MIN, a, b, c, n, precision);
+    SNRT_VV_ROUTE(min, SNRT_VV_MIN, snrt_vec_core_idx(),
+                  SNRT_VEC_COMPUTE_CORES_LOG2, false);
+}
+
+/**
+ * @brief snrt_vv_min_core_l1() on vectors that fill whole 64-bit words, on the
+ *        calling core only. Caller-padded variant.
+ * @details n is a number of WORDS. If the vectors have a partial last word,
+ *          the caller has made room for all of it: the elements after the
+ *          vector's last one are read, and written to c, like the others (the
+ *          result of them is meaningless). No tail code runs, which saves 16 to
+ *          95 cycles per call when there is a partial word.
+ * @pre As snrt_vv_min_core_l1(), with a, b and c covering n words.
+ */
+SNRT_VEC_INLINE bool snrt_vv_min_padded_core_l1(const void* a, const void* b,
+                                                 void* c, size_t n,
+                                                 precision_t precision) {
+    SNRT_VV_ROUTE(min, SNRT_VV_MIN, 0, 0, true);
+}
+
+/**
+ * @brief snrt_vv_min_l1() on vectors that fill whole 64-bit words, across the
+ *        compute cores. Caller-padded variant.
+ * @details n is a number of WORDS; see snrt_vv_min_padded_core_l1().
+ * @pre As snrt_vv_min_l1(), with a, b and c covering n words.
+ */
+SNRT_VEC_INLINE bool snrt_vv_min_padded_l1(const void* a, const void* b,
+                                            void* c, size_t n,
+                                            precision_t precision) {
+    SNRT_VV_ROUTE(min, SNRT_VV_MIN, snrt_vec_core_idx(),
+                  SNRT_VEC_COMPUTE_CORES_LOG2, true);
 }
 
 //------------------------------------------------------------------------------
@@ -490,7 +669,7 @@ SNRT_VEC_INLINE bool snrt_vv_min_l1(const void* a, const void* b, void* c,
  */
 SNRT_VEC_INLINE bool snrt_vv_max_core_l1(const void* a, const void* b, void* c,
                                          size_t n, precision_t precision) {
-    return snrt_vv_generic_core_l1(SNRT_VV_MAX, a, b, c, n, precision);
+    SNRT_VV_ROUTE(max, SNRT_VV_MAX, 0, 0, false);
 }
 
 /**
@@ -503,7 +682,37 @@ SNRT_VEC_INLINE bool snrt_vv_max_core_l1(const void* a, const void* b, void* c,
  */
 SNRT_VEC_INLINE bool snrt_vv_max_l1(const void* a, const void* b, void* c,
                                     size_t n, precision_t precision) {
-    return snrt_vv_generic_l1(SNRT_VV_MAX, a, b, c, n, precision);
+    SNRT_VV_ROUTE(max, SNRT_VV_MAX, snrt_vec_core_idx(),
+                  SNRT_VEC_COMPUTE_CORES_LOG2, false);
+}
+
+/**
+ * @brief snrt_vv_max_core_l1() on vectors that fill whole 64-bit words, on the
+ *        calling core only. Caller-padded variant.
+ * @details n is a number of WORDS. If the vectors have a partial last word,
+ *          the caller has made room for all of it: the elements after the
+ *          vector's last one are read, and written to c, like the others (the
+ *          result of them is meaningless). No tail code runs, which saves 16 to
+ *          95 cycles per call when there is a partial word.
+ * @pre As snrt_vv_max_core_l1(), with a, b and c covering n words.
+ */
+SNRT_VEC_INLINE bool snrt_vv_max_padded_core_l1(const void* a, const void* b,
+                                                 void* c, size_t n,
+                                                 precision_t precision) {
+    SNRT_VV_ROUTE(max, SNRT_VV_MAX, 0, 0, true);
+}
+
+/**
+ * @brief snrt_vv_max_l1() on vectors that fill whole 64-bit words, across the
+ *        compute cores. Caller-padded variant.
+ * @details n is a number of WORDS; see snrt_vv_max_padded_core_l1().
+ * @pre As snrt_vv_max_l1(), with a, b and c covering n words.
+ */
+SNRT_VEC_INLINE bool snrt_vv_max_padded_l1(const void* a, const void* b,
+                                            void* c, size_t n,
+                                            precision_t precision) {
+    SNRT_VV_ROUTE(max, SNRT_VV_MAX, snrt_vec_core_idx(),
+                  SNRT_VEC_COMPUTE_CORES_LOG2, true);
 }
 
 //------------------------------------------------------------------------------
@@ -651,6 +860,77 @@ SNRT_VEC_INLINE void snrt_vv_axpy_word(precision_t precision, const void* in0,
 #undef SNRT_AXPY_BY_PACKED_PRECISION
 
 /**
+ * @brief Implementation of the axpy functions: the same split as
+ *        snrt_vv_impl() (see there for core, cores_log2 and padded).
+ */
+SNRT_VEC_INLINE bool snrt_vv_axpy_impl(const void* alpha, const void* x,
+                                       const void* y, void* z, size_t n,
+                                       precision_t precision, size_t core,
+                                       size_t cores_log2, bool padded) {
+    if (!snrt_vec_precision_valid(precision)) return false;
+    if (core >= ((size_t)1 << cores_log2)) return true;
+
+    const size_t lanes_log2 = snrt_vec_lanes_log2(precision);
+    const size_t words = padded ? n : n >> lanes_log2;
+    const size_t tail = padded ? 0 : n & (((size_t)1 << lanes_log2) - 1);
+    const size_t mask = ((size_t)1 << cores_log2) - 1;
+    const size_t count = words > core ? ((words - core - 1) >> cores_log2) + 1
+                                      : 0;
+
+    const bool tail_here = tail > 0 && (words & mask) == core;
+    if (count == 0 && !tail_here) return true;
+
+    const double scalar = snrt_vs_load(alpha, precision);
+
+    if (count > 0) {
+        const size_t offset = core * sizeof(uint64_t);
+        const size_t stride = sizeof(uint64_t) << cores_log2;
+#ifdef SNRT_SUPPORTS_FREP
+        snrt_vec_stream_begin_2in_strided((const uint8_t*)x + offset,
+                                          (const uint8_t*)y + offset,
+                                          (uint8_t*)z + offset, count, stride);
+        snrt_vv_axpy_stream(precision, count, scalar);
+        snrt_vec_stream_end();
+#else
+        for (size_t i = 0; i < count; ++i)
+            snrt_vv_axpy_word(precision,
+                              (const uint8_t*)x + offset + i * stride,
+                              (const uint8_t*)y + offset + i * stride,
+                              (uint8_t*)z + offset + i * stride, scalar);
+#endif
+    }
+
+    if (tail_here) {
+        uint64_t in0, in1, out;
+        const size_t bytes = tail * (size_t)precision;
+        const size_t offset = words * sizeof(uint64_t);
+        snrt_vec_tail_load(&in0, (const uint8_t*)x + offset, bytes);
+        snrt_vec_tail_load(&in1, (const uint8_t*)y + offset, bytes);
+        snrt_vv_axpy_word(precision, &in0, &in1, &out, scalar);
+        snrt_vec_tail_store((uint8_t*)z + offset, &out, bytes);
+    }
+
+    snrt_fpu_fence();
+    return true;
+}
+
+__attribute__((noinline, unused)) static bool snrt_vv_axpy_dispatch(
+    const void* alpha, const void* x, const void* y, void* z, size_t n,
+    precision_t precision, size_t core, size_t cores_log2, bool padded) {
+    SNRT_VEC_BY_PRECISION(
+        P, snrt_vv_axpy_impl(alpha, x, y, z, n, P, core, cores_log2, padded));
+}
+
+#define SNRT_VV_AXPY_ROUTE(CORE, LOG2, PADDED)                               \
+    do {                                                                     \
+        if (__builtin_constant_p(precision))                                 \
+            return snrt_vv_axpy_impl(alpha, x, y, z, n, precision, CORE,     \
+                                     LOG2, PADDED);                          \
+        return snrt_vv_axpy_dispatch(alpha, x, y, z, n, precision, CORE,     \
+                                     LOG2, PADDED);                          \
+    } while (0)
+
+/**
  * @brief Compute z = alpha * x + y for vectors in L1, on the calling core
  *        only.
  * @details Whole 64-bit words are processed by an SSR/FREP loop: x and y are
@@ -685,51 +965,16 @@ SNRT_VEC_INLINE void snrt_vv_axpy_word(precision_t precision, const void* in0,
 SNRT_VEC_INLINE bool snrt_vv_axpy_core_l1(const void* alpha, const void* x,
                                           const void* y, void* z, size_t n,
                                           precision_t precision) {
-    if (!snrt_vec_precision_valid(precision)) return false;
-
-    const size_t lanes = snrt_vec_lanes(precision);
-    const size_t words = n / lanes;
-    const size_t tail = n % lanes;
-
-    const double scalar = snrt_vs_load(alpha, precision);
-
-    // Whole words, streamed.
-    if (words > 0) {
-#ifdef SNRT_SUPPORTS_FREP
-        snrt_vec_stream_begin_2in(x, y, z, words);
-        snrt_vv_axpy_stream(precision, words, scalar);
-        snrt_vec_stream_end();
-#else
-        for (size_t i = 0; i < words; ++i)
-            snrt_vv_axpy_word(precision,
-                              (const uint8_t*)x + i * sizeof(uint64_t),
-                              (const uint8_t*)y + i * sizeof(uint64_t),
-                              (uint8_t*)z + i * sizeof(uint64_t), scalar);
-#endif
-    }
-
-    // Remaining elements, through zero-padded words.
-    if (tail > 0) {
-        uint64_t in0, in1, out;
-        const size_t bytes = tail * (size_t)precision;
-        const size_t offset = words * sizeof(uint64_t);
-        snrt_vec_tail_load(&in0, (const uint8_t*)x + offset, bytes);
-        snrt_vec_tail_load(&in1, (const uint8_t*)y + offset, bytes);
-        snrt_vv_axpy_word(precision, &in0, &in1, &out, scalar);
-        snrt_vec_tail_store((uint8_t*)z + offset, &out, bytes);
-    }
-
-    snrt_fpu_fence();
-    return true;
+    SNRT_VV_AXPY_ROUTE(0, 0, false);
 }
 
 /**
  * @brief Compute z = alpha * x + y for vectors in L1, across the compute cores
  *        of the cluster.
- * @details Same operation as snrt_vv_axpy_core_l1(). The whole 64-bit words are
- *          divided among the compute cores in contiguous ranges (the first
- *          n_words % cores cores get one more); the last core also takes the
- *          elements that do not fill a whole word. Cores that are given no
+ * @details Same operation as snrt_vv_axpy_core_l1(). The 64-bit words are dealt out to
+ *          the eight compute cores in turns (core c takes words c, c + 8,
+ *          c + 16, ...), which avoids bank conflicts; the partial last word,
+ *          if any, goes to the core whose turn it is. Cores that are given no
  *          work return immediately. No core touches another core's elements.
  * @return True if the precision is recognized; false otherwise, without
  *         accessing the buffers.
@@ -743,21 +988,35 @@ SNRT_VEC_INLINE bool snrt_vv_axpy_core_l1(const void* alpha, const void* x,
 SNRT_VEC_INLINE bool snrt_vv_axpy_l1(const void* alpha, const void* x,
                                      const void* y, void* z, size_t n,
                                      precision_t precision) {
-    if (!snrt_vec_precision_valid(precision)) return false;
-    if (!snrt_is_compute_core()) return true;
-
-    const size_t lanes = snrt_vec_lanes(precision);
-    const size_t cores = snrt_cluster_compute_core_num();
-    const size_t core = snrt_cluster_core_idx();
-
-    size_t first, count;
-    snrt_vec_split(n / lanes, core, cores, &first, &count);
-
-    size_t elems = count * lanes;
-    if (core == cores - 1) elems += n % lanes;  // sub-word tail
-
-    const size_t offset = first * sizeof(uint64_t);
-    return snrt_vv_axpy_core_l1(alpha, (const uint8_t*)x + offset,
-                                (const uint8_t*)y + offset,
-                                (uint8_t*)z + offset, elems, precision);
+    SNRT_VV_AXPY_ROUTE(snrt_vec_core_idx(), SNRT_VEC_COMPUTE_CORES_LOG2, false);
 }
+
+/**
+ * @brief snrt_vv_axpy_core_l1() on vectors that fill whole 64-bit words, on the
+ *        calling core only. Caller-padded variant.
+ * @details n is a number of WORDS. If the vectors have a partial last word,
+ *          the caller has made room for all of it: the elements after the
+ *          vector's last one are read, and written to z (meaningless values).
+ *          No tail code runs.
+ * @pre As snrt_vv_axpy_core_l1(), with x, y and z covering n words.
+ */
+SNRT_VEC_INLINE bool snrt_vv_axpy_padded_core_l1(const void* alpha,
+                                                 const void* x, const void* y,
+                                                 void* z, size_t n,
+                                                 precision_t precision) {
+    SNRT_VV_AXPY_ROUTE(0, 0, true);
+}
+
+/**
+ * @brief snrt_vv_axpy_l1() on vectors that fill whole 64-bit words, across the
+ *        compute cores. Caller-padded variant: n is a number of WORDS, see
+ *        snrt_vv_axpy_padded_core_l1().
+ */
+SNRT_VEC_INLINE bool snrt_vv_axpy_padded_l1(const void* alpha, const void* x,
+                                            const void* y, void* z, size_t n,
+                                            precision_t precision) {
+    SNRT_VV_AXPY_ROUTE(snrt_vec_core_idx(), SNRT_VEC_COMPUTE_CORES_LOG2, true);
+}
+
+#undef SNRT_VV_ROUTE
+#undef SNRT_VV_AXPY_ROUTE

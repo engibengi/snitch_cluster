@@ -39,6 +39,15 @@
     (SNRT_CLUSTER_CORE_NUM - SNRT_CLUSTER_DM_CORE_NUM)
 
 /**
+ * @brief Base-2 logarithm of SNRT_VEC_COMPUTE_CORES: the multicore functions
+ *        split the words with shifts and masks, so the number of compute cores
+ *        must be a power of two (eight in the current configuration).
+ */
+#define SNRT_VEC_COMPUTE_CORES_LOG2 3
+static_assert(SNRT_VEC_COMPUTE_CORES == (1 << SNRT_VEC_COMPUTE_CORES_LOG2),
+              "the multicore vector functions are written for eight cores");
+
+/**
  * @brief Index of the calling core within the cluster (0 ... cores - 1),
  *        read from the hart id. Same value as snrt_cluster_core_idx().
  * @details With a single cluster, the index is the hart id minus the first
@@ -71,6 +80,38 @@ SNRT_VEC_INLINE bool snrt_vec_precision_valid(precision_t precision) {
     return precision == FP64 || precision == FP32 || precision == FP16 ||
            precision == FP8;
 }
+
+/**
+ * @brief Evaluate EXPR once for each precision, with P a compile-time constant
+ *        in it, and return the value of the one that matches `precision` (a
+ *        variable of the caller); false for an invalid precision.
+ * @details Used by the non-inlined dispatchers of the vector functions, which
+ *          serve a precision known only at run time: one comparison chain
+ *          chooses among four copies of the code, each specialised for its
+ *          precision, instead of one copy that chooses at every step (a
+ *          switch whose table is constant data, in L3). EXPR is the call of
+ *          the always-inline implementation, with P as the precision.
+ */
+#define SNRT_VEC_BY_PRECISION(P, EXPR)                \
+    do {                                              \
+        if (precision == FP64) {                      \
+            const precision_t P = FP64;               \
+            return EXPR;                              \
+        }                                             \
+        if (precision == FP32) {                      \
+            const precision_t P = FP32;               \
+            return EXPR;                              \
+        }                                             \
+        if (precision == FP16) {                      \
+            const precision_t P = FP16;               \
+            return EXPR;                              \
+        }                                             \
+        if (precision == FP8) {                       \
+            const precision_t P = FP8;                \
+            return EXPR;                              \
+        }                                             \
+        return false;                                 \
+    } while (0)
 
 /**
  * @brief Base-2 logarithm of snrt_vec_lanes(): FP64 = 0, FP32 = 1, FP16 = 2,
@@ -135,32 +176,45 @@ SNRT_VEC_INLINE void snrt_vec_split_log2(size_t words, size_t core,
 
 /**
  * @brief Start streaming: SSR data mover 0 reads @p words words from @p src
- *        and data mover 1 writes @p words words to @p dst.
+ *        and data mover 1 writes @p words words to @p dst, with @p stride_bytes
+ *        between consecutive words of each.
  * @details The streams are consumed by a hardware loop (frep) that reads ft0
  *          and writes ft1. Call snrt_vec_stream_end() afterwards.
- * @pre words > 0 and both pointers are eight-byte aligned.
+ * @pre words > 0, both pointers are eight-byte aligned and the stride is a
+ *      multiple of eight bytes.
  */
-SNRT_VEC_INLINE void snrt_vec_stream_begin(const void* src, void* dst,
-                                         size_t words) {
-    snrt_ssr_loop_1d(SNRT_SSR_DM0, words, sizeof(uint64_t));
-    snrt_ssr_loop_1d(SNRT_SSR_DM1, words, sizeof(uint64_t));
+SNRT_VEC_INLINE void snrt_vec_stream_begin_strided(const void* src, void* dst,
+                                                   size_t words,
+                                                   size_t stride_bytes) {
+    snrt_ssr_loop_1d(SNRT_SSR_DM0, words, stride_bytes);
+    snrt_ssr_loop_1d(SNRT_SSR_DM1, words, stride_bytes);
     snrt_ssr_read(SNRT_SSR_DM0, SNRT_SSR_1D, (void*)src);
     snrt_ssr_write(SNRT_SSR_DM1, SNRT_SSR_1D, dst);
     snrt_ssr_enable();
 }
 
 /**
+ * @brief snrt_vec_stream_begin_strided() with consecutive words.
+ */
+SNRT_VEC_INLINE void snrt_vec_stream_begin(const void* src, void* dst,
+                                           size_t words) {
+    snrt_vec_stream_begin_strided(src, dst, words, sizeof(uint64_t));
+}
+
+/**
  * @brief Start streaming: SSR data movers 0 and 1 read @p words words from
  *        @p src0 and @p src1, and data mover 2 writes @p words words to
- *        @p dst.
+ *        @p dst, with @p stride_bytes between consecutive words of each.
  * @details The streams are consumed by a hardware loop (frep) that reads ft0
  *          and ft1 and writes ft2. Call snrt_vec_stream_end() afterwards.
- * @pre words > 0 and all the pointers are eight-byte aligned.
+ * @pre words > 0, all the pointers are eight-byte aligned and the stride is a
+ *      multiple of eight bytes.
  */
-SNRT_VEC_INLINE void snrt_vec_stream_begin_2in(const void* src0,
-                                             const void* src1, void* dst,
-                                             size_t words) {
-    snrt_ssr_loop_1d(SNRT_SSR_DM_ALL, words, sizeof(uint64_t));
+SNRT_VEC_INLINE void snrt_vec_stream_begin_2in_strided(const void* src0,
+                                                       const void* src1,
+                                                       void* dst, size_t words,
+                                                       size_t stride_bytes) {
+    snrt_ssr_loop_1d(SNRT_SSR_DM_ALL, words, stride_bytes);
     snrt_ssr_read(SNRT_SSR_DM0, SNRT_SSR_1D, (void*)src0);
     snrt_ssr_read(SNRT_SSR_DM1, SNRT_SSR_1D, (void*)src1);
     snrt_ssr_write(SNRT_SSR_DM2, SNRT_SSR_1D, dst);
@@ -168,28 +222,21 @@ SNRT_VEC_INLINE void snrt_vec_stream_begin_2in(const void* src0,
 }
 
 /**
- * @brief Start streaming: SSR data movers 0 and 1 read @p words words from
- *        @p src0 and @p src1. Nothing is written.
- * @details The streams are consumed by a hardware loop (frep) that reads ft0
- *          and ft1. Call snrt_vec_stream_end() afterwards.
- * @pre words > 0 and both pointers are eight-byte aligned.
+ * @brief snrt_vec_stream_begin_2in_strided() with consecutive words.
  */
-SNRT_VEC_INLINE void snrt_vec_stream_begin_2read(const void* src0,
-                                               const void* src1,
+SNRT_VEC_INLINE void snrt_vec_stream_begin_2in(const void* src0,
+                                               const void* src1, void* dst,
                                                size_t words) {
-    snrt_ssr_loop_1d(SNRT_SSR_DM0, words, sizeof(uint64_t));
-    snrt_ssr_loop_1d(SNRT_SSR_DM1, words, sizeof(uint64_t));
-    snrt_ssr_read(SNRT_SSR_DM0, SNRT_SSR_1D, (void*)src0);
-    snrt_ssr_read(SNRT_SSR_DM1, SNRT_SSR_1D, (void*)src1);
-    snrt_ssr_enable();
+    snrt_vec_stream_begin_2in_strided(src0, src1, dst, words,
+                                      sizeof(uint64_t));
 }
 
 /**
  * @brief Start streaming: SSR data movers 0 and 1 read @p words words from
  *        @p src0 and @p src1, with @p stride_bytes between consecutive words.
  *        Nothing is written.
- * @details As snrt_vec_stream_begin_2read() (which is this with a stride of
- *          eight bytes). Call snrt_vec_stream_end() afterwards.
+ * @details The streams are consumed by a hardware loop (frep) that reads ft0
+ *          and ft1. Call snrt_vec_stream_end() afterwards.
  * @pre words > 0, both pointers are eight-byte aligned and the stride is a
  *      multiple of eight bytes.
  */
@@ -202,6 +249,15 @@ SNRT_VEC_INLINE void snrt_vec_stream_begin_2read_strided(const void* src0,
     snrt_ssr_read(SNRT_SSR_DM0, SNRT_SSR_1D, (void*)src0);
     snrt_ssr_read(SNRT_SSR_DM1, SNRT_SSR_1D, (void*)src1);
     snrt_ssr_enable();
+}
+
+/**
+ * @brief snrt_vec_stream_begin_2read_strided() with consecutive words.
+ */
+SNRT_VEC_INLINE void snrt_vec_stream_begin_2read(const void* src0,
+                                                 const void* src1,
+                                                 size_t words) {
+    snrt_vec_stream_begin_2read_strided(src0, src1, words, sizeof(uint64_t));
 }
 
 // Accesses of a given size through any type, to copy the bytes of the elements.
