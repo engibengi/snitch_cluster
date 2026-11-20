@@ -16,9 +16,11 @@
 //         (it is in the partial word, which has its own owner; count 1).
 // A core that reads the wrong words, a wrong stride, a lost or double-counted
 // word or a lost partial word changes the count.
+// Each vector is also run through the padded function: when it is a whole
+// number of words (already padded), and when it has a partial word, passed as
+// a caller pads it (one word more, the elements after the vector being zero).
 //
-// Timing: constant precision and mode, data in L1, a warm-up call, the mean of
-// REPS calls on core 0, all cores calling.
+// The timing of these functions is in vector_dot_cores_latency_l1.c.
 
 #include "snrt.h"
 #include "vector_reduce_l1.h"
@@ -28,18 +30,11 @@
 // Words of the longest vector: 2096. One more word of room, for the partial
 // word of FP8 (7 elements) of the longest vector.
 #define MAXW 2097
-#define REPS 8
 #define SLOT 16
 #define SENTINEL 0xA5
 
 #define ALLOC(type, count) \
     ((type*)snrt_l1_alloc_cluster_local((count) * sizeof(type), 8))
-
-// Lengths of the timing table, in words.
-static const unsigned time_words[] = {
-    8,   12,  16,  24,  32,  40,   48,   64,   75,   96,   128, 160,
-    192, 256, 333, 384, 512, 700, 768, 1024, 1536, 2048, 2096};
-#define N_TIME (sizeof(time_words) / sizeof(time_words[0]))
 
 // Lengths of the correctness check, in words: a power of two, the smallest
 // length, primes and an odd length, and the longest.
@@ -120,21 +115,28 @@ __attribute__((noinline)) static unsigned check_one(
                 set_element(b, P, pos[k], encode(P, 1));
             }
         }
-        // The same data, through the function for whole words as well (variant
-        // 1), when there is no partial word.
-        for (int variant = 0; variant < 2; ++variant) {
-            if (variant == 1 && n % lanes) break;
+        // The same data through the padded function as well: variant 1 when
+        // the vector is a whole number of words (already padded), variant 2
+        // when it has a partial word, passed the way a caller pads it (one
+        // word more; the elements after the vector are zero in the buffer).
+        for (int variant = 0; variant < 3; ++variant) {
+            if (variant == 1 && n % lanes) continue;
+            if (variant == 2 && n % lanes == 0) continue;
             if (core == 0)
                 for (unsigned i = 0; i < SLOT; ++i)
                     ((volatile uint8_t*)res)[i] = SENTINEL;
             snrt_fpu_fence();
             snrt_cluster_hw_barrier();
 
+            const char* vname = variant == 1   ? " (padded)"
+                                : variant == 2 ? " (padded, caller-padded)"
+                                               : "";
             if (variant == 0)
                 snrt_vec_dot_cores_l1(a, b, res, scratch, n, P, M, log2);
             else
-                snrt_vec_dot_padded_cores_l1(a, b, res, scratch, n / lanes,
-                                                P, M, log2);
+                snrt_vec_dot_padded_cores_l1(
+                    a, b, res, scratch, n / lanes + (variant == 2 ? 1 : 0), P,
+                    M, log2);
 
             if (compute) {
                 const uint64_t want = encode(rp, count);
@@ -150,8 +152,8 @@ __attribute__((noinline)) static unsigned check_one(
                                "got 0x%02x\n",
                                core, name, (unsigned)(n / lanes),
                                (unsigned)(n % lanes), (unsigned)cores,
-                               'A' + run, variant ? " (padded)" : "", i,
-                               (unsigned)w, (unsigned)g);
+                               'A' + run, vname, i, (unsigned)w,
+                               (unsigned)g);
                     }
                 }
             }
@@ -188,61 +190,6 @@ static unsigned check_config(const char* name, uint8_t* a, uint8_t* b,
         }
     }
     return errors;
-}
-
-// Cycles of one call, mean of REPS, as seen by core 0.
-template <precision_t P, snrt_acc_t M>
-__attribute__((noinline)) static unsigned time_call(const uint8_t* a,
-                                                    const uint8_t* b,
-                                                    void* scratch, uint8_t* res,
-                                                    size_t n, unsigned log2) {
-    snrt_vec_dot_cores_l1(a, b, res, scratch, n, P, M, log2);  // warm-up
-    snrt_cluster_hw_barrier();
-    const uint32_t t0 = snrt_mcycle();
-    for (int r = 0; r < REPS; ++r)
-        snrt_vec_dot_cores_l1(a, b, res, scratch, n, P, M, log2);
-    const uint32_t t1 = snrt_mcycle();
-    return (t1 - t0 + REPS / 2) / REPS;
-}
-
-// The same for whole words (no partial word): the length is in words.
-template <precision_t P, snrt_acc_t M>
-__attribute__((noinline)) static unsigned time_call_padded(
-    const uint8_t* a, const uint8_t* b, void* scratch, uint8_t* res,
-    size_t words, unsigned log2) {
-    snrt_vec_dot_padded_cores_l1(a, b, res, scratch, words, P, M, log2);
-    snrt_cluster_hw_barrier();
-    const uint32_t t0 = snrt_mcycle();
-    for (int r = 0; r < REPS; ++r)
-        snrt_vec_dot_padded_cores_l1(a, b, res, scratch, words, P, M, log2);
-    const uint32_t t1 = snrt_mcycle();
-    return (t1 - t0 + REPS / 2) / REPS;
-}
-
-template <precision_t P, snrt_acc_t M>
-static void time_config(const char* name, uint8_t* a, uint8_t* b,
-                        void* scratch, uint8_t* res) {
-    const size_t lanes = 8 / (size_t)P;
-    const int core0 = snrt_cluster_core_idx() == 0;
-    if (core0) {
-        printf("%s\n", name);
-        printf("  words   1 core   8 cores   1 padded  8 padded\n");
-    }
-    for (unsigned w = 0; w < N_TIME; ++w) {
-        const unsigned t1 =
-            time_call<P, M>(a, b, scratch, res, time_words[w] * lanes, 0);
-        const unsigned t8 =
-            time_call<P, M>(a, b, scratch, res, time_words[w] * lanes, 3);
-        // Whole words, through the function for whole words.
-        const unsigned p1 =
-            time_call_padded<P, M>(a, b, scratch, res, time_words[w], 0);
-        const unsigned p8 =
-            time_call_padded<P, M>(a, b, scratch, res, time_words[w], 3);
-        if (core0)
-            printf("  %5u  %7u   %7u   %8u  %8u\n", time_words[w], t1, t8, p1,
-                   p8);
-    }
-    if (core0) printf("\n");
 }
 
 int main() {
@@ -284,27 +231,8 @@ int main() {
         total += ((volatile unsigned*)core_errors)[c];
     if (core == 0)
         printf("Dot product on 1 and 8 cores, interleaved split: %s (%u "
-               "errors)\n\n",
+               "errors)\n",
                total ? "FAIL" : "PASS", total);
-
-    if (core == 0) {
-        printf("Cycles of one call, all cores calling (timed on core 0), "
-               "length in 64-bit words\n");
-        // The distance between the vectors changes the bank conflicts (see
-        // bank_conflicts_l1.c): print it, in words and modulo 32 (the banks).
-        printf("a at 0x%x (bank %u), b at 0x%x (bank %u), b - a = %d words "
-               "(mod 32: %d)\n\n",
-               (unsigned)(uintptr_t)a, (unsigned)(((uintptr_t)a >> 3) & 31),
-               (unsigned)(uintptr_t)b, (unsigned)(((uintptr_t)b >> 3) & 31),
-               (int)(((intptr_t)b - (intptr_t)a) / 8),
-               (int)((((intptr_t)b - (intptr_t)a) / 8) & 31));
-    }
-    time_config<FP64, SNRT_ACC_SAME>("FP64", a, b, scratch, res);
-    time_config<FP32, SNRT_ACC_SAME>("FP32", a, b, scratch, res);
-    time_config<FP16, SNRT_ACC_SAME>("FP16", a, b, scratch, res);
-    time_config<FP16, SNRT_ACC_WIDE>("FP16 wide", a, b, scratch, res);
-    time_config<FP8, SNRT_ACC_SAME>("FP8", a, b, scratch, res);
-    time_config<FP8, SNRT_ACC_WIDE>("FP8 wide", a, b, scratch, res);
 
     return (core == 0 && total) ? 1 : 0;
 }
