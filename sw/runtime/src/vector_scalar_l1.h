@@ -21,9 +21,10 @@
  *          pair per operation, each a one-line call into the shared code.
  *
  *          Memory layout: the eight-core functions read one stream and write
- *          one, and showed no dependence on the distance between a and c
- *          (eight values of c - a modulo 32 measured, FP64 and FP8, 256 to
- *          2048 words). See paper_notes/BANK_CONFLICTS.md, section 8.
+ *          one, and showed no dependence on the distance between a and c: all
+ *          32 values of c - a modulo 32 and c == a were measured (FP64 and
+ *          FP8, 1000 and 2048 words), the spread is 2 cycles. See
+ *          paper_notes/BANK_CONFLICTS.md, section 8.
  */
 
 #pragma once
