@@ -138,6 +138,68 @@ SNRT_VEC_INLINE size_t snrt_vec_lanes(precision_t precision) {
 }
 
 /**
+ * @brief Classes of element-wise operations with the same crossover between
+ *        one core and eight cores.
+ * @details Eight cores cost a few cycles more than one for the set-up, and
+ *          save (words per core) * (cycles per word of the operation); the
+ *          length where they start to pay depends on the cycles per word.
+ */
+typedef enum {
+    SNRT_VEC_COST_SIMPLE,  // add, sub, mul, min, max: one cycle per word
+    SNRT_VEC_COST_DIV,     // division: several cycles per word
+    SNRT_VEC_COST_AXPY     // axpy: one cycle per word in FP64, two when packed
+} snrt_vec_cost_class_t;
+
+/**
+ * @brief Length, in 64-bit words, from which the automatic functions use the
+ *        eight compute cores instead of one.
+ * @details Measured with `vector_*_crossover_latency_l1` (lengths 1 to 24
+ *          words, FP64 to FP8): the first length from which the eight-core
+ *          function is no slower than the one-core function, rounded up to one
+ *          value for the class (the loss is 2 to 3 cycles in a narrow window at
+ *          worst). The general functions pay for the partial last word (done by
+ *          the single core), so their threshold is higher than the padded
+ *          ones. See paper_notes/ELEMENTWISE_LATENCY.md, section 8.
+ *          Measured crossovers: simple ops padded 11 to 15, general 14 to 18;
+ *          division 4, general 4 to 5; axpy FP64 padded 13, general 14; packed
+ *          axpy padded 9, general 13 to 17.
+ */
+SNRT_VEC_INLINE size_t snrt_vec_min_words_multicore(snrt_vec_cost_class_t cls,
+                                               precision_t precision,
+                                               bool padded) {
+    if (cls == SNRT_VEC_COST_DIV) return padded ? 4 : 5;
+    if (cls == SNRT_VEC_COST_AXPY) {
+        if (precision == FP64) return padded ? 13 : 15;
+        return padded ? 9 : 13;
+    }
+    return padded ? 13 : 16;
+}
+
+/**
+ * @brief Whether the automatic functions use the eight compute cores (true) or
+ *        one core (false) for a vector of n elements.
+ * @details True from snrt_vec_min_words_multicore() words. With padded set, n
+ *          is a number of words; otherwise a partial last word counts as a
+ *          word.
+ */
+SNRT_VEC_INLINE bool snrt_vec_use_multicore(snrt_vec_cost_class_t cls, size_t n,
+                                            precision_t precision,
+                                            bool padded) {
+    const size_t words =
+        padded ? n
+               : (n + snrt_vec_lanes(precision) - 1) >>
+                     snrt_vec_lanes_log2(precision);
+    return words >= snrt_vec_min_words_multicore(cls, precision, padded);
+}
+
+/// Base-2 logarithm of the number of cores chosen by snrt_vec_use_multicore():
+/// SNRT_VEC_COMPUTE_CORES_LOG2 (eight cores) or 0 (one core).
+#define SNRT_VEC_MULTICORE_LOG2(CLS, N, PRECISION, PADDED) \
+    (snrt_vec_use_multicore(CLS, N, PRECISION, PADDED)     \
+         ? (size_t)SNRT_VEC_COMPUTE_CORES_LOG2             \
+         : (size_t)0)
+
+/**
  * @brief Split @p words 64-bit words among @p cores cores, in order.
  * @details Core i gets a contiguous range. The first (words % cores) cores get
  *          one word more than the others, so all words are covered and the

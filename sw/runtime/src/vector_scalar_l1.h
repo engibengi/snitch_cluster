@@ -10,10 +10,18 @@
  *          vector_scalar.h) take pointers anywhere, and run these on tiles
  *          they bring into L1.
  *
- *          Each operation comes in two versions:
+ *          Each operation comes in six versions:
  *          - snrt_vs_<op>_core_l1: runs on the calling core only;
  *          - snrt_vs_<op>_l1: every compute core of the cluster calls
- *            it, and the work is split among them.
+ *            it, and the work is split among them (in turns);
+ *          - snrt_vs_<op>_padded_core_l1 and snrt_vs_<op>_padded_l1: the same
+ *            for a vector the caller has padded to whole words (the length is
+ *            given in words, no tail code runs);
+ *          - snrt_vs_<op>_auto_l1 and snrt_vs_<op>_padded_auto_l1: like the
+ *            eight-core functions, but a short vector (fewer words than a
+ *            threshold, see snrt_vec_min_words_multicore()) is done by core 0
+ *            alone: they follow the faster of the one-core and eight-core
+ *            versions.
  *
  *          The code is organised in two parts. The first part (implementation)
  *          is shared by all the operations, which differ only in the
@@ -416,6 +424,40 @@ SNRT_VEC_INLINE bool snrt_vs_add_padded_l1(const void* a, const void* s,
                   SNRT_VEC_COMPUTE_CORES_LOG2, true);
 }
 
+/**
+ * @brief snrt_vs_add_l1() with the number of cores chosen by the length.
+ * @details Every compute core calls it, with the same arguments, like
+ *          snrt_vs_add_l1(). A vector shorter than the threshold of
+ *          snrt_vec_min_words_multicore() (about 13 to 16 words for this operation;
+ *          the partial last word counts as a word) is done by core 0 alone and
+ *          the other cores return at once; a longer one is split among the
+ *          eight cores in turns. The threshold is where eight cores start to
+ *          be faster than one (measured).
+ * @pre As snrt_vs_add_l1(). There is no barrier inside: before using
+ *      the result on another core, synchronize.
+ */
+SNRT_VEC_INLINE bool snrt_vs_add_auto_l1(const void* a, const void* s, void* c,
+                                         size_t n, precision_t precision) {
+    SNRT_VS_ROUTE(add, SNRT_VS_ADD, snrt_vec_core_idx(),
+                  SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_SIMPLE, n, precision,
+                                           false),
+                  false);
+}
+
+/**
+ * @brief snrt_vs_add_auto_l1() on data the caller has padded to whole
+ *        64-bit words: n is a number of WORDS. Caller-padded variant.
+ * @pre As snrt_vs_add_padded_l1().
+ */
+SNRT_VEC_INLINE bool snrt_vs_add_padded_auto_l1(const void* a, const void* s,
+                                                void* c, size_t n,
+                                                precision_t precision) {
+    SNRT_VS_ROUTE(add, SNRT_VS_ADD, snrt_vec_core_idx(),
+                  SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_SIMPLE, n, precision,
+                                           true),
+                  true);
+}
+
 //------------------------------------------------------------------------------
 // Subtraction
 //------------------------------------------------------------------------------
@@ -476,6 +518,40 @@ SNRT_VEC_INLINE bool snrt_vs_sub_padded_l1(const void* a, const void* s,
                   SNRT_VEC_COMPUTE_CORES_LOG2, true);
 }
 
+/**
+ * @brief snrt_vs_sub_l1() with the number of cores chosen by the length.
+ * @details Every compute core calls it, with the same arguments, like
+ *          snrt_vs_sub_l1(). A vector shorter than the threshold of
+ *          snrt_vec_min_words_multicore() (about 13 to 16 words for this operation;
+ *          the partial last word counts as a word) is done by core 0 alone and
+ *          the other cores return at once; a longer one is split among the
+ *          eight cores in turns. The threshold is where eight cores start to
+ *          be faster than one (measured).
+ * @pre As snrt_vs_sub_l1(). There is no barrier inside: before using
+ *      the result on another core, synchronize.
+ */
+SNRT_VEC_INLINE bool snrt_vs_sub_auto_l1(const void* a, const void* s, void* c,
+                                         size_t n, precision_t precision) {
+    SNRT_VS_ROUTE(sub, SNRT_VS_SUB, snrt_vec_core_idx(),
+                  SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_SIMPLE, n, precision,
+                                           false),
+                  false);
+}
+
+/**
+ * @brief snrt_vs_sub_auto_l1() on data the caller has padded to whole
+ *        64-bit words: n is a number of WORDS. Caller-padded variant.
+ * @pre As snrt_vs_sub_padded_l1().
+ */
+SNRT_VEC_INLINE bool snrt_vs_sub_padded_auto_l1(const void* a, const void* s,
+                                                void* c, size_t n,
+                                                precision_t precision) {
+    SNRT_VS_ROUTE(sub, SNRT_VS_SUB, snrt_vec_core_idx(),
+                  SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_SIMPLE, n, precision,
+                                           true),
+                  true);
+}
+
 //------------------------------------------------------------------------------
 // Multiplication
 //------------------------------------------------------------------------------
@@ -533,6 +609,40 @@ SNRT_VEC_INLINE bool snrt_vs_mul_padded_l1(const void* a, const void* s,
                                             precision_t precision) {
     SNRT_VS_ROUTE(mul, SNRT_VS_MUL, snrt_vec_core_idx(),
                   SNRT_VEC_COMPUTE_CORES_LOG2, true);
+}
+
+/**
+ * @brief snrt_vs_mul_l1() with the number of cores chosen by the length.
+ * @details Every compute core calls it, with the same arguments, like
+ *          snrt_vs_mul_l1(). A vector shorter than the threshold of
+ *          snrt_vec_min_words_multicore() (about 13 to 16 words for this operation;
+ *          the partial last word counts as a word) is done by core 0 alone and
+ *          the other cores return at once; a longer one is split among the
+ *          eight cores in turns. The threshold is where eight cores start to
+ *          be faster than one (measured).
+ * @pre As snrt_vs_mul_l1(). There is no barrier inside: before using
+ *      the result on another core, synchronize.
+ */
+SNRT_VEC_INLINE bool snrt_vs_mul_auto_l1(const void* a, const void* s, void* c,
+                                         size_t n, precision_t precision) {
+    SNRT_VS_ROUTE(mul, SNRT_VS_MUL, snrt_vec_core_idx(),
+                  SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_SIMPLE, n, precision,
+                                           false),
+                  false);
+}
+
+/**
+ * @brief snrt_vs_mul_auto_l1() on data the caller has padded to whole
+ *        64-bit words: n is a number of WORDS. Caller-padded variant.
+ * @pre As snrt_vs_mul_padded_l1().
+ */
+SNRT_VEC_INLINE bool snrt_vs_mul_padded_auto_l1(const void* a, const void* s,
+                                                void* c, size_t n,
+                                                precision_t precision) {
+    SNRT_VS_ROUTE(mul, SNRT_VS_MUL, snrt_vec_core_idx(),
+                  SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_SIMPLE, n, precision,
+                                           true),
+                  true);
 }
 
 //------------------------------------------------------------------------------
@@ -604,6 +714,40 @@ SNRT_VEC_INLINE bool snrt_vs_div_padded_l1(const void* a, const void* s,
                   SNRT_VEC_COMPUTE_CORES_LOG2, true);
 }
 
+/**
+ * @brief snrt_vs_div_l1() with the number of cores chosen by the length.
+ * @details Every compute core calls it, with the same arguments, like
+ *          snrt_vs_div_l1(). A vector shorter than the threshold of
+ *          snrt_vec_min_words_multicore() (about 13 to 16 words for this operation;
+ *          the partial last word counts as a word) is done by core 0 alone and
+ *          the other cores return at once; a longer one is split among the
+ *          eight cores in turns. The threshold is where eight cores start to
+ *          be faster than one (measured).
+ * @pre As snrt_vs_div_l1(). There is no barrier inside: before using
+ *      the result on another core, synchronize.
+ */
+SNRT_VEC_INLINE bool snrt_vs_div_auto_l1(const void* a, const void* s, void* c,
+                                         size_t n, precision_t precision) {
+    SNRT_VS_ROUTE(div, SNRT_VS_DIV, snrt_vec_core_idx(),
+                  SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_DIV, n, precision,
+                                           false),
+                  false);
+}
+
+/**
+ * @brief snrt_vs_div_auto_l1() on data the caller has padded to whole
+ *        64-bit words: n is a number of WORDS. Caller-padded variant.
+ * @pre As snrt_vs_div_padded_l1().
+ */
+SNRT_VEC_INLINE bool snrt_vs_div_padded_auto_l1(const void* a, const void* s,
+                                                void* c, size_t n,
+                                                precision_t precision) {
+    SNRT_VS_ROUTE(div, SNRT_VS_DIV, snrt_vec_core_idx(),
+                  SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_DIV, n, precision,
+                                           true),
+                  true);
+}
+
 //------------------------------------------------------------------------------
 // Minimum
 //------------------------------------------------------------------------------
@@ -666,6 +810,40 @@ SNRT_VEC_INLINE bool snrt_vs_min_padded_l1(const void* a, const void* s,
                   SNRT_VEC_COMPUTE_CORES_LOG2, true);
 }
 
+/**
+ * @brief snrt_vs_min_l1() with the number of cores chosen by the length.
+ * @details Every compute core calls it, with the same arguments, like
+ *          snrt_vs_min_l1(). A vector shorter than the threshold of
+ *          snrt_vec_min_words_multicore() (about 13 to 16 words for this operation;
+ *          the partial last word counts as a word) is done by core 0 alone and
+ *          the other cores return at once; a longer one is split among the
+ *          eight cores in turns. The threshold is where eight cores start to
+ *          be faster than one (measured).
+ * @pre As snrt_vs_min_l1(). There is no barrier inside: before using
+ *      the result on another core, synchronize.
+ */
+SNRT_VEC_INLINE bool snrt_vs_min_auto_l1(const void* a, const void* s, void* c,
+                                         size_t n, precision_t precision) {
+    SNRT_VS_ROUTE(min, SNRT_VS_MIN, snrt_vec_core_idx(),
+                  SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_SIMPLE, n, precision,
+                                           false),
+                  false);
+}
+
+/**
+ * @brief snrt_vs_min_auto_l1() on data the caller has padded to whole
+ *        64-bit words: n is a number of WORDS. Caller-padded variant.
+ * @pre As snrt_vs_min_padded_l1().
+ */
+SNRT_VEC_INLINE bool snrt_vs_min_padded_auto_l1(const void* a, const void* s,
+                                                void* c, size_t n,
+                                                precision_t precision) {
+    SNRT_VS_ROUTE(min, SNRT_VS_MIN, snrt_vec_core_idx(),
+                  SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_SIMPLE, n, precision,
+                                           true),
+                  true);
+}
+
 //------------------------------------------------------------------------------
 // Maximum
 //------------------------------------------------------------------------------
@@ -726,6 +904,40 @@ SNRT_VEC_INLINE bool snrt_vs_max_padded_l1(const void* a, const void* s,
                                             precision_t precision) {
     SNRT_VS_ROUTE(max, SNRT_VS_MAX, snrt_vec_core_idx(),
                   SNRT_VEC_COMPUTE_CORES_LOG2, true);
+}
+
+/**
+ * @brief snrt_vs_max_l1() with the number of cores chosen by the length.
+ * @details Every compute core calls it, with the same arguments, like
+ *          snrt_vs_max_l1(). A vector shorter than the threshold of
+ *          snrt_vec_min_words_multicore() (about 13 to 16 words for this operation;
+ *          the partial last word counts as a word) is done by core 0 alone and
+ *          the other cores return at once; a longer one is split among the
+ *          eight cores in turns. The threshold is where eight cores start to
+ *          be faster than one (measured).
+ * @pre As snrt_vs_max_l1(). There is no barrier inside: before using
+ *      the result on another core, synchronize.
+ */
+SNRT_VEC_INLINE bool snrt_vs_max_auto_l1(const void* a, const void* s, void* c,
+                                         size_t n, precision_t precision) {
+    SNRT_VS_ROUTE(max, SNRT_VS_MAX, snrt_vec_core_idx(),
+                  SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_SIMPLE, n, precision,
+                                           false),
+                  false);
+}
+
+/**
+ * @brief snrt_vs_max_auto_l1() on data the caller has padded to whole
+ *        64-bit words: n is a number of WORDS. Caller-padded variant.
+ * @pre As snrt_vs_max_padded_l1().
+ */
+SNRT_VEC_INLINE bool snrt_vs_max_padded_auto_l1(const void* a, const void* s,
+                                                void* c, size_t n,
+                                                precision_t precision) {
+    SNRT_VS_ROUTE(max, SNRT_VS_MAX, snrt_vec_core_idx(),
+                  SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_SIMPLE, n, precision,
+                                           true),
+                  true);
 }
 
 #undef SNRT_VS_ROUTE
