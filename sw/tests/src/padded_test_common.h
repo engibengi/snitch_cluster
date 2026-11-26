@@ -9,7 +9,8 @@
 //   P_MULTI(...)       call of the padded eight-core function
 // where b is the second vector (or the scalar, in its first element) and p the
 // precision. The calls are macros so that the same text is used with a run-time
-// precision (the dispatcher) and with a constant one (the inlined code).
+// precision (the code of every precision inlined) and with a constant one (the
+// code of that precision only).
 //
 // The result of the padded function is compared, byte by byte over the n
 // elements of the vector, with the result of the general function on the same
@@ -63,7 +64,8 @@ static unsigned words_of(unsigned n, precision_t prec) {
     return (n + lanes - 1) / lanes;
 }
 
-// One case with a run-time precision (not inlined: the dispatcher is used).
+// One case with a run-time precision (not inlined: the library code of every
+// precision is inlined here).
 __attribute__((noinline)) static void run_case(precision_t prec, unsigned n,
                                                bool multi) {
     const unsigned core = snrt_cluster_core_idx();

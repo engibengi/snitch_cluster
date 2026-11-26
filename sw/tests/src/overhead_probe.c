@@ -486,8 +486,8 @@ int main() {
                    "division) and the run-time choice among the six "
                    "configurations (so +div is not part of it)\n");
             printf("   (library - +switch is what is left: the partial-word "
-                   "path, the supported check and the call of the "
-                   "dispatcher)\n");
+                   "path, the supported check and the run-time choice "
+                   "of the library)\n");
             printf("   const    = snrt_vec_dot_core_l1 called with the "
                    "precision and the mode as constants,\n"
                    "              so that the choices on them are removed at "
@@ -616,7 +616,8 @@ int main() {
     //     (1) the single-core call on the core's own slice; (2) the wait at the
     //     first barrier; (3) the combine of the partials, on core 0; (4) the
     //     wait at the second barrier. Run with constants (the code of one
-    //     configuration) and with a run-time precision (the dispatcher), to
+    //     configuration) and with a run-time precision (until 2026-11-24 the
+    //     dispatcher; now the code of every precision, inlined), to
     //     see where the cost of a multicore call is, and whether it is the
     //     same when eight cores run the same code at once.
     //--------------------------------------------------------------------------

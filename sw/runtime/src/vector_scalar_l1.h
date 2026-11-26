@@ -23,6 +23,16 @@
  *            alone: they follow the faster of the one-core and eight-core
  *            versions.
  *
+ *          Precision: give it as a compile-time constant (FP64, FP32, FP16
+ *          or FP8 written at the call, or the parameter of an always-inlined
+ *          caller that receives one). The functions are always inlined, so
+ *          the code folds to the instructions of that precision. A precision
+ *          known only at run time (read from memory) works, but then the
+ *          code of every precision is inlined at the call: larger and slower
+ *          (measured 20 to 100 cycles more per call). A caller with a
+ *          run-time precision switches on it once, at the top of its kernel,
+ *          and calls a version of the kernel with a constant precision.
+ *
  *          The code is organised in two parts. The first part (implementation)
  *          is shared by all the operations, which differ only in the
  *          instruction they use. The second part is the public functions, one
@@ -365,7 +375,7 @@ SNRT_VS_DEFINE_DISPATCH(max, SNRT_VS_MAX)
  */
 SNRT_VEC_INLINE bool snrt_vs_add_core_l1(const void* a, const void* s, void* c,
                                          size_t n, precision_t precision) {
-    SNRT_VS_ROUTE(add, SNRT_VS_ADD, 0, 0, false);
+    return snrt_vs_impl(SNRT_VS_ADD, a, s, c, n, precision, 0, 0, false);
 }
 
 /**
@@ -392,8 +402,8 @@ SNRT_VEC_INLINE bool snrt_vs_add_core_l1(const void* a, const void* s, void* c,
  */
 SNRT_VEC_INLINE bool snrt_vs_add_l1(const void* a, const void* s, void* c,
                                     size_t n, precision_t precision) {
-    SNRT_VS_ROUTE(add, SNRT_VS_ADD, snrt_vec_core_idx(),
-                  SNRT_VEC_COMPUTE_CORES_LOG2, false);
+    return snrt_vs_impl(SNRT_VS_ADD, a, s, c, n, precision, snrt_vec_core_idx(),
+                        SNRT_VEC_COMPUTE_CORES_LOG2, false);
 }
 
 /**
@@ -409,7 +419,7 @@ SNRT_VEC_INLINE bool snrt_vs_add_l1(const void* a, const void* s, void* c,
 SNRT_VEC_INLINE bool snrt_vs_add_padded_core_l1(const void* a, const void* s,
                                                  void* c, size_t n,
                                                  precision_t precision) {
-    SNRT_VS_ROUTE(add, SNRT_VS_ADD, 0, 0, true);
+    return snrt_vs_impl(SNRT_VS_ADD, a, s, c, n, precision, 0, 0, true);
 }
 
 /**
@@ -420,28 +430,28 @@ SNRT_VEC_INLINE bool snrt_vs_add_padded_core_l1(const void* a, const void* s,
 SNRT_VEC_INLINE bool snrt_vs_add_padded_l1(const void* a, const void* s,
                                             void* c, size_t n,
                                             precision_t precision) {
-    SNRT_VS_ROUTE(add, SNRT_VS_ADD, snrt_vec_core_idx(),
-                  SNRT_VEC_COMPUTE_CORES_LOG2, true);
+    return snrt_vs_impl(SNRT_VS_ADD, a, s, c, n, precision, snrt_vec_core_idx(),
+                        SNRT_VEC_COMPUTE_CORES_LOG2, true);
 }
 
 /**
  * @brief snrt_vs_add_l1() with the number of cores chosen by the length.
  * @details Every compute core calls it, with the same arguments, like
  *          snrt_vs_add_l1(). A vector shorter than the threshold of
- *          snrt_vec_min_words_multicore() (about 13 to 16 words for this operation;
- *          the partial last word counts as a word) is done by core 0 alone and
- *          the other cores return at once; a longer one is split among the
- *          eight cores in turns. The threshold is where eight cores start to
- *          be faster than one (measured).
+ *          snrt_vec_min_words_multicore() (about 13 to 16 words for this
+ *          operation; the partial last word counts as a word) is done by core 0
+ *          alone and the other cores return at once; a longer one is split
+ *          among the eight cores in turns. The threshold is where eight cores
+ *          start to be faster than one (measured).
  * @pre As snrt_vs_add_l1(). There is no barrier inside: before using
  *      the result on another core, synchronize.
  */
 SNRT_VEC_INLINE bool snrt_vs_add_auto_l1(const void* a, const void* s, void* c,
                                          size_t n, precision_t precision) {
-    SNRT_VS_ROUTE(add, SNRT_VS_ADD, snrt_vec_core_idx(),
-                  SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_SIMPLE, n, precision,
-                                           false),
-                  false);
+    return snrt_vs_impl(SNRT_VS_ADD, a, s, c, n, precision, snrt_vec_core_idx(),
+                        SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_SIMPLE, n,
+                                                precision, false),
+                        false);
 }
 
 /**
@@ -452,10 +462,10 @@ SNRT_VEC_INLINE bool snrt_vs_add_auto_l1(const void* a, const void* s, void* c,
 SNRT_VEC_INLINE bool snrt_vs_add_padded_auto_l1(const void* a, const void* s,
                                                 void* c, size_t n,
                                                 precision_t precision) {
-    SNRT_VS_ROUTE(add, SNRT_VS_ADD, snrt_vec_core_idx(),
-                  SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_SIMPLE, n, precision,
-                                           true),
-                  true);
+    return snrt_vs_impl(SNRT_VS_ADD, a, s, c, n, precision, snrt_vec_core_idx(),
+                        SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_SIMPLE, n,
+                                                precision, true),
+                        true);
 }
 
 //------------------------------------------------------------------------------
@@ -473,7 +483,7 @@ SNRT_VEC_INLINE bool snrt_vs_add_padded_auto_l1(const void* a, const void* s,
  */
 SNRT_VEC_INLINE bool snrt_vs_sub_core_l1(const void* a, const void* s, void* c,
                                          size_t n, precision_t precision) {
-    SNRT_VS_ROUTE(sub, SNRT_VS_SUB, 0, 0, false);
+    return snrt_vs_impl(SNRT_VS_SUB, a, s, c, n, precision, 0, 0, false);
 }
 
 /**
@@ -486,8 +496,8 @@ SNRT_VEC_INLINE bool snrt_vs_sub_core_l1(const void* a, const void* s, void* c,
  */
 SNRT_VEC_INLINE bool snrt_vs_sub_l1(const void* a, const void* s, void* c,
                                     size_t n, precision_t precision) {
-    SNRT_VS_ROUTE(sub, SNRT_VS_SUB, snrt_vec_core_idx(),
-                  SNRT_VEC_COMPUTE_CORES_LOG2, false);
+    return snrt_vs_impl(SNRT_VS_SUB, a, s, c, n, precision, snrt_vec_core_idx(),
+                        SNRT_VEC_COMPUTE_CORES_LOG2, false);
 }
 
 /**
@@ -503,7 +513,7 @@ SNRT_VEC_INLINE bool snrt_vs_sub_l1(const void* a, const void* s, void* c,
 SNRT_VEC_INLINE bool snrt_vs_sub_padded_core_l1(const void* a, const void* s,
                                                  void* c, size_t n,
                                                  precision_t precision) {
-    SNRT_VS_ROUTE(sub, SNRT_VS_SUB, 0, 0, true);
+    return snrt_vs_impl(SNRT_VS_SUB, a, s, c, n, precision, 0, 0, true);
 }
 
 /**
@@ -514,28 +524,28 @@ SNRT_VEC_INLINE bool snrt_vs_sub_padded_core_l1(const void* a, const void* s,
 SNRT_VEC_INLINE bool snrt_vs_sub_padded_l1(const void* a, const void* s,
                                             void* c, size_t n,
                                             precision_t precision) {
-    SNRT_VS_ROUTE(sub, SNRT_VS_SUB, snrt_vec_core_idx(),
-                  SNRT_VEC_COMPUTE_CORES_LOG2, true);
+    return snrt_vs_impl(SNRT_VS_SUB, a, s, c, n, precision, snrt_vec_core_idx(),
+                        SNRT_VEC_COMPUTE_CORES_LOG2, true);
 }
 
 /**
  * @brief snrt_vs_sub_l1() with the number of cores chosen by the length.
  * @details Every compute core calls it, with the same arguments, like
  *          snrt_vs_sub_l1(). A vector shorter than the threshold of
- *          snrt_vec_min_words_multicore() (about 13 to 16 words for this operation;
- *          the partial last word counts as a word) is done by core 0 alone and
- *          the other cores return at once; a longer one is split among the
- *          eight cores in turns. The threshold is where eight cores start to
- *          be faster than one (measured).
+ *          snrt_vec_min_words_multicore() (about 13 to 16 words for this
+ *          operation; the partial last word counts as a word) is done by core 0
+ *          alone and the other cores return at once; a longer one is split
+ *          among the eight cores in turns. The threshold is where eight cores
+ *          start to be faster than one (measured).
  * @pre As snrt_vs_sub_l1(). There is no barrier inside: before using
  *      the result on another core, synchronize.
  */
 SNRT_VEC_INLINE bool snrt_vs_sub_auto_l1(const void* a, const void* s, void* c,
                                          size_t n, precision_t precision) {
-    SNRT_VS_ROUTE(sub, SNRT_VS_SUB, snrt_vec_core_idx(),
-                  SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_SIMPLE, n, precision,
-                                           false),
-                  false);
+    return snrt_vs_impl(SNRT_VS_SUB, a, s, c, n, precision, snrt_vec_core_idx(),
+                        SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_SIMPLE, n,
+                                                precision, false),
+                        false);
 }
 
 /**
@@ -546,10 +556,10 @@ SNRT_VEC_INLINE bool snrt_vs_sub_auto_l1(const void* a, const void* s, void* c,
 SNRT_VEC_INLINE bool snrt_vs_sub_padded_auto_l1(const void* a, const void* s,
                                                 void* c, size_t n,
                                                 precision_t precision) {
-    SNRT_VS_ROUTE(sub, SNRT_VS_SUB, snrt_vec_core_idx(),
-                  SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_SIMPLE, n, precision,
-                                           true),
-                  true);
+    return snrt_vs_impl(SNRT_VS_SUB, a, s, c, n, precision, snrt_vec_core_idx(),
+                        SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_SIMPLE, n,
+                                                precision, true),
+                        true);
 }
 
 //------------------------------------------------------------------------------
@@ -566,7 +576,7 @@ SNRT_VEC_INLINE bool snrt_vs_sub_padded_auto_l1(const void* a, const void* s,
  */
 SNRT_VEC_INLINE bool snrt_vs_mul_core_l1(const void* a, const void* s, void* c,
                                          size_t n, precision_t precision) {
-    SNRT_VS_ROUTE(mul, SNRT_VS_MUL, 0, 0, false);
+    return snrt_vs_impl(SNRT_VS_MUL, a, s, c, n, precision, 0, 0, false);
 }
 
 /**
@@ -579,8 +589,8 @@ SNRT_VEC_INLINE bool snrt_vs_mul_core_l1(const void* a, const void* s, void* c,
  */
 SNRT_VEC_INLINE bool snrt_vs_mul_l1(const void* a, const void* s, void* c,
                                     size_t n, precision_t precision) {
-    SNRT_VS_ROUTE(mul, SNRT_VS_MUL, snrt_vec_core_idx(),
-                  SNRT_VEC_COMPUTE_CORES_LOG2, false);
+    return snrt_vs_impl(SNRT_VS_MUL, a, s, c, n, precision, snrt_vec_core_idx(),
+                        SNRT_VEC_COMPUTE_CORES_LOG2, false);
 }
 
 /**
@@ -596,7 +606,7 @@ SNRT_VEC_INLINE bool snrt_vs_mul_l1(const void* a, const void* s, void* c,
 SNRT_VEC_INLINE bool snrt_vs_mul_padded_core_l1(const void* a, const void* s,
                                                  void* c, size_t n,
                                                  precision_t precision) {
-    SNRT_VS_ROUTE(mul, SNRT_VS_MUL, 0, 0, true);
+    return snrt_vs_impl(SNRT_VS_MUL, a, s, c, n, precision, 0, 0, true);
 }
 
 /**
@@ -607,28 +617,28 @@ SNRT_VEC_INLINE bool snrt_vs_mul_padded_core_l1(const void* a, const void* s,
 SNRT_VEC_INLINE bool snrt_vs_mul_padded_l1(const void* a, const void* s,
                                             void* c, size_t n,
                                             precision_t precision) {
-    SNRT_VS_ROUTE(mul, SNRT_VS_MUL, snrt_vec_core_idx(),
-                  SNRT_VEC_COMPUTE_CORES_LOG2, true);
+    return snrt_vs_impl(SNRT_VS_MUL, a, s, c, n, precision, snrt_vec_core_idx(),
+                        SNRT_VEC_COMPUTE_CORES_LOG2, true);
 }
 
 /**
  * @brief snrt_vs_mul_l1() with the number of cores chosen by the length.
  * @details Every compute core calls it, with the same arguments, like
  *          snrt_vs_mul_l1(). A vector shorter than the threshold of
- *          snrt_vec_min_words_multicore() (about 13 to 16 words for this operation;
- *          the partial last word counts as a word) is done by core 0 alone and
- *          the other cores return at once; a longer one is split among the
- *          eight cores in turns. The threshold is where eight cores start to
- *          be faster than one (measured).
+ *          snrt_vec_min_words_multicore() (about 13 to 16 words for this
+ *          operation; the partial last word counts as a word) is done by core 0
+ *          alone and the other cores return at once; a longer one is split
+ *          among the eight cores in turns. The threshold is where eight cores
+ *          start to be faster than one (measured).
  * @pre As snrt_vs_mul_l1(). There is no barrier inside: before using
  *      the result on another core, synchronize.
  */
 SNRT_VEC_INLINE bool snrt_vs_mul_auto_l1(const void* a, const void* s, void* c,
                                          size_t n, precision_t precision) {
-    SNRT_VS_ROUTE(mul, SNRT_VS_MUL, snrt_vec_core_idx(),
-                  SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_SIMPLE, n, precision,
-                                           false),
-                  false);
+    return snrt_vs_impl(SNRT_VS_MUL, a, s, c, n, precision, snrt_vec_core_idx(),
+                        SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_SIMPLE, n,
+                                                precision, false),
+                        false);
 }
 
 /**
@@ -639,10 +649,10 @@ SNRT_VEC_INLINE bool snrt_vs_mul_auto_l1(const void* a, const void* s, void* c,
 SNRT_VEC_INLINE bool snrt_vs_mul_padded_auto_l1(const void* a, const void* s,
                                                 void* c, size_t n,
                                                 precision_t precision) {
-    SNRT_VS_ROUTE(mul, SNRT_VS_MUL, snrt_vec_core_idx(),
-                  SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_SIMPLE, n, precision,
-                                           true),
-                  true);
+    return snrt_vs_impl(SNRT_VS_MUL, a, s, c, n, precision, snrt_vec_core_idx(),
+                        SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_SIMPLE, n,
+                                                precision, true),
+                        true);
 }
 
 //------------------------------------------------------------------------------
@@ -666,7 +676,7 @@ SNRT_VEC_INLINE bool snrt_vs_mul_padded_auto_l1(const void* a, const void* s,
  */
 SNRT_VEC_INLINE bool snrt_vs_div_core_l1(const void* a, const void* s, void* c,
                                          size_t n, precision_t precision) {
-    SNRT_VS_ROUTE(div, SNRT_VS_DIV, 0, 0, false);
+    return snrt_vs_impl(SNRT_VS_DIV, a, s, c, n, precision, 0, 0, false);
 }
 
 /**
@@ -682,8 +692,8 @@ SNRT_VEC_INLINE bool snrt_vs_div_core_l1(const void* a, const void* s, void* c,
  */
 SNRT_VEC_INLINE bool snrt_vs_div_l1(const void* a, const void* s, void* c,
                                     size_t n, precision_t precision) {
-    SNRT_VS_ROUTE(div, SNRT_VS_DIV, snrt_vec_core_idx(),
-                  SNRT_VEC_COMPUTE_CORES_LOG2, false);
+    return snrt_vs_impl(SNRT_VS_DIV, a, s, c, n, precision, snrt_vec_core_idx(),
+                        SNRT_VEC_COMPUTE_CORES_LOG2, false);
 }
 
 /**
@@ -699,7 +709,7 @@ SNRT_VEC_INLINE bool snrt_vs_div_l1(const void* a, const void* s, void* c,
 SNRT_VEC_INLINE bool snrt_vs_div_padded_core_l1(const void* a, const void* s,
                                                  void* c, size_t n,
                                                  precision_t precision) {
-    SNRT_VS_ROUTE(div, SNRT_VS_DIV, 0, 0, true);
+    return snrt_vs_impl(SNRT_VS_DIV, a, s, c, n, precision, 0, 0, true);
 }
 
 /**
@@ -710,28 +720,28 @@ SNRT_VEC_INLINE bool snrt_vs_div_padded_core_l1(const void* a, const void* s,
 SNRT_VEC_INLINE bool snrt_vs_div_padded_l1(const void* a, const void* s,
                                             void* c, size_t n,
                                             precision_t precision) {
-    SNRT_VS_ROUTE(div, SNRT_VS_DIV, snrt_vec_core_idx(),
-                  SNRT_VEC_COMPUTE_CORES_LOG2, true);
+    return snrt_vs_impl(SNRT_VS_DIV, a, s, c, n, precision, snrt_vec_core_idx(),
+                        SNRT_VEC_COMPUTE_CORES_LOG2, true);
 }
 
 /**
  * @brief snrt_vs_div_l1() with the number of cores chosen by the length.
  * @details Every compute core calls it, with the same arguments, like
  *          snrt_vs_div_l1(). A vector shorter than the threshold of
- *          snrt_vec_min_words_multicore() (about 13 to 16 words for this operation;
- *          the partial last word counts as a word) is done by core 0 alone and
- *          the other cores return at once; a longer one is split among the
- *          eight cores in turns. The threshold is where eight cores start to
- *          be faster than one (measured).
+ *          snrt_vec_min_words_multicore() (about 13 to 16 words for this
+ *          operation; the partial last word counts as a word) is done by core 0
+ *          alone and the other cores return at once; a longer one is split
+ *          among the eight cores in turns. The threshold is where eight cores
+ *          start to be faster than one (measured).
  * @pre As snrt_vs_div_l1(). There is no barrier inside: before using
  *      the result on another core, synchronize.
  */
 SNRT_VEC_INLINE bool snrt_vs_div_auto_l1(const void* a, const void* s, void* c,
                                          size_t n, precision_t precision) {
-    SNRT_VS_ROUTE(div, SNRT_VS_DIV, snrt_vec_core_idx(),
-                  SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_DIV, n, precision,
-                                           false),
-                  false);
+    return snrt_vs_impl(SNRT_VS_DIV, a, s, c, n, precision, snrt_vec_core_idx(),
+                        SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_DIV, n, precision,
+                                                false),
+                        false);
 }
 
 /**
@@ -742,10 +752,10 @@ SNRT_VEC_INLINE bool snrt_vs_div_auto_l1(const void* a, const void* s, void* c,
 SNRT_VEC_INLINE bool snrt_vs_div_padded_auto_l1(const void* a, const void* s,
                                                 void* c, size_t n,
                                                 precision_t precision) {
-    SNRT_VS_ROUTE(div, SNRT_VS_DIV, snrt_vec_core_idx(),
-                  SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_DIV, n, precision,
-                                           true),
-                  true);
+    return snrt_vs_impl(SNRT_VS_DIV, a, s, c, n, precision, snrt_vec_core_idx(),
+                        SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_DIV, n, precision,
+                                                true),
+                        true);
 }
 
 //------------------------------------------------------------------------------
@@ -765,7 +775,7 @@ SNRT_VEC_INLINE bool snrt_vs_div_padded_auto_l1(const void* a, const void* s,
  */
 SNRT_VEC_INLINE bool snrt_vs_min_core_l1(const void* a, const void* s, void* c,
                                          size_t n, precision_t precision) {
-    SNRT_VS_ROUTE(min, SNRT_VS_MIN, 0, 0, false);
+    return snrt_vs_impl(SNRT_VS_MIN, a, s, c, n, precision, 0, 0, false);
 }
 
 /**
@@ -778,8 +788,8 @@ SNRT_VEC_INLINE bool snrt_vs_min_core_l1(const void* a, const void* s, void* c,
  */
 SNRT_VEC_INLINE bool snrt_vs_min_l1(const void* a, const void* s, void* c,
                                     size_t n, precision_t precision) {
-    SNRT_VS_ROUTE(min, SNRT_VS_MIN, snrt_vec_core_idx(),
-                  SNRT_VEC_COMPUTE_CORES_LOG2, false);
+    return snrt_vs_impl(SNRT_VS_MIN, a, s, c, n, precision, snrt_vec_core_idx(),
+                        SNRT_VEC_COMPUTE_CORES_LOG2, false);
 }
 
 /**
@@ -795,7 +805,7 @@ SNRT_VEC_INLINE bool snrt_vs_min_l1(const void* a, const void* s, void* c,
 SNRT_VEC_INLINE bool snrt_vs_min_padded_core_l1(const void* a, const void* s,
                                                  void* c, size_t n,
                                                  precision_t precision) {
-    SNRT_VS_ROUTE(min, SNRT_VS_MIN, 0, 0, true);
+    return snrt_vs_impl(SNRT_VS_MIN, a, s, c, n, precision, 0, 0, true);
 }
 
 /**
@@ -806,28 +816,28 @@ SNRT_VEC_INLINE bool snrt_vs_min_padded_core_l1(const void* a, const void* s,
 SNRT_VEC_INLINE bool snrt_vs_min_padded_l1(const void* a, const void* s,
                                             void* c, size_t n,
                                             precision_t precision) {
-    SNRT_VS_ROUTE(min, SNRT_VS_MIN, snrt_vec_core_idx(),
-                  SNRT_VEC_COMPUTE_CORES_LOG2, true);
+    return snrt_vs_impl(SNRT_VS_MIN, a, s, c, n, precision, snrt_vec_core_idx(),
+                        SNRT_VEC_COMPUTE_CORES_LOG2, true);
 }
 
 /**
  * @brief snrt_vs_min_l1() with the number of cores chosen by the length.
  * @details Every compute core calls it, with the same arguments, like
  *          snrt_vs_min_l1(). A vector shorter than the threshold of
- *          snrt_vec_min_words_multicore() (about 13 to 16 words for this operation;
- *          the partial last word counts as a word) is done by core 0 alone and
- *          the other cores return at once; a longer one is split among the
- *          eight cores in turns. The threshold is where eight cores start to
- *          be faster than one (measured).
+ *          snrt_vec_min_words_multicore() (about 13 to 16 words for this
+ *          operation; the partial last word counts as a word) is done by core 0
+ *          alone and the other cores return at once; a longer one is split
+ *          among the eight cores in turns. The threshold is where eight cores
+ *          start to be faster than one (measured).
  * @pre As snrt_vs_min_l1(). There is no barrier inside: before using
  *      the result on another core, synchronize.
  */
 SNRT_VEC_INLINE bool snrt_vs_min_auto_l1(const void* a, const void* s, void* c,
                                          size_t n, precision_t precision) {
-    SNRT_VS_ROUTE(min, SNRT_VS_MIN, snrt_vec_core_idx(),
-                  SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_SIMPLE, n, precision,
-                                           false),
-                  false);
+    return snrt_vs_impl(SNRT_VS_MIN, a, s, c, n, precision, snrt_vec_core_idx(),
+                        SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_SIMPLE, n,
+                                                precision, false),
+                        false);
 }
 
 /**
@@ -838,10 +848,10 @@ SNRT_VEC_INLINE bool snrt_vs_min_auto_l1(const void* a, const void* s, void* c,
 SNRT_VEC_INLINE bool snrt_vs_min_padded_auto_l1(const void* a, const void* s,
                                                 void* c, size_t n,
                                                 precision_t precision) {
-    SNRT_VS_ROUTE(min, SNRT_VS_MIN, snrt_vec_core_idx(),
-                  SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_SIMPLE, n, precision,
-                                           true),
-                  true);
+    return snrt_vs_impl(SNRT_VS_MIN, a, s, c, n, precision, snrt_vec_core_idx(),
+                        SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_SIMPLE, n,
+                                                precision, true),
+                        true);
 }
 
 //------------------------------------------------------------------------------
@@ -861,7 +871,7 @@ SNRT_VEC_INLINE bool snrt_vs_min_padded_auto_l1(const void* a, const void* s,
  */
 SNRT_VEC_INLINE bool snrt_vs_max_core_l1(const void* a, const void* s, void* c,
                                          size_t n, precision_t precision) {
-    SNRT_VS_ROUTE(max, SNRT_VS_MAX, 0, 0, false);
+    return snrt_vs_impl(SNRT_VS_MAX, a, s, c, n, precision, 0, 0, false);
 }
 
 /**
@@ -874,8 +884,8 @@ SNRT_VEC_INLINE bool snrt_vs_max_core_l1(const void* a, const void* s, void* c,
  */
 SNRT_VEC_INLINE bool snrt_vs_max_l1(const void* a, const void* s, void* c,
                                     size_t n, precision_t precision) {
-    SNRT_VS_ROUTE(max, SNRT_VS_MAX, snrt_vec_core_idx(),
-                  SNRT_VEC_COMPUTE_CORES_LOG2, false);
+    return snrt_vs_impl(SNRT_VS_MAX, a, s, c, n, precision, snrt_vec_core_idx(),
+                        SNRT_VEC_COMPUTE_CORES_LOG2, false);
 }
 
 /**
@@ -891,7 +901,7 @@ SNRT_VEC_INLINE bool snrt_vs_max_l1(const void* a, const void* s, void* c,
 SNRT_VEC_INLINE bool snrt_vs_max_padded_core_l1(const void* a, const void* s,
                                                  void* c, size_t n,
                                                  precision_t precision) {
-    SNRT_VS_ROUTE(max, SNRT_VS_MAX, 0, 0, true);
+    return snrt_vs_impl(SNRT_VS_MAX, a, s, c, n, precision, 0, 0, true);
 }
 
 /**
@@ -902,28 +912,28 @@ SNRT_VEC_INLINE bool snrt_vs_max_padded_core_l1(const void* a, const void* s,
 SNRT_VEC_INLINE bool snrt_vs_max_padded_l1(const void* a, const void* s,
                                             void* c, size_t n,
                                             precision_t precision) {
-    SNRT_VS_ROUTE(max, SNRT_VS_MAX, snrt_vec_core_idx(),
-                  SNRT_VEC_COMPUTE_CORES_LOG2, true);
+    return snrt_vs_impl(SNRT_VS_MAX, a, s, c, n, precision, snrt_vec_core_idx(),
+                        SNRT_VEC_COMPUTE_CORES_LOG2, true);
 }
 
 /**
  * @brief snrt_vs_max_l1() with the number of cores chosen by the length.
  * @details Every compute core calls it, with the same arguments, like
  *          snrt_vs_max_l1(). A vector shorter than the threshold of
- *          snrt_vec_min_words_multicore() (about 13 to 16 words for this operation;
- *          the partial last word counts as a word) is done by core 0 alone and
- *          the other cores return at once; a longer one is split among the
- *          eight cores in turns. The threshold is where eight cores start to
- *          be faster than one (measured).
+ *          snrt_vec_min_words_multicore() (about 13 to 16 words for this
+ *          operation; the partial last word counts as a word) is done by core 0
+ *          alone and the other cores return at once; a longer one is split
+ *          among the eight cores in turns. The threshold is where eight cores
+ *          start to be faster than one (measured).
  * @pre As snrt_vs_max_l1(). There is no barrier inside: before using
  *      the result on another core, synchronize.
  */
 SNRT_VEC_INLINE bool snrt_vs_max_auto_l1(const void* a, const void* s, void* c,
                                          size_t n, precision_t precision) {
-    SNRT_VS_ROUTE(max, SNRT_VS_MAX, snrt_vec_core_idx(),
-                  SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_SIMPLE, n, precision,
-                                           false),
-                  false);
+    return snrt_vs_impl(SNRT_VS_MAX, a, s, c, n, precision, snrt_vec_core_idx(),
+                        SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_SIMPLE, n,
+                                                precision, false),
+                        false);
 }
 
 /**
@@ -934,10 +944,10 @@ SNRT_VEC_INLINE bool snrt_vs_max_auto_l1(const void* a, const void* s, void* c,
 SNRT_VEC_INLINE bool snrt_vs_max_padded_auto_l1(const void* a, const void* s,
                                                 void* c, size_t n,
                                                 precision_t precision) {
-    SNRT_VS_ROUTE(max, SNRT_VS_MAX, snrt_vec_core_idx(),
-                  SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_SIMPLE, n, precision,
-                                           true),
-                  true);
+    return snrt_vs_impl(SNRT_VS_MAX, a, s, c, n, precision, snrt_vec_core_idx(),
+                        SNRT_VEC_MULTICORE_LOG2(SNRT_VEC_COST_SIMPLE, n,
+                                                precision, true),
+                        true);
 }
 
 #undef SNRT_VS_ROUTE

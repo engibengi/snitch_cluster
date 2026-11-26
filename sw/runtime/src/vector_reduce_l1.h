@@ -14,6 +14,15 @@
  *            combined. Unlike the elementwise functions, it contains barriers,
  *            because the partial results must be combined.
  *
+ *          Precision and accumulation: give them as compile-time constants
+ *          (written at the call, or the parameters of an always-inlined caller
+ *          that receives them). The functions are always inlined, so the code
+ *          folds to that configuration. Values known only at run time work,
+ *          but then the code of every configuration is inlined at the call:
+ *          larger and slower. A caller with a run-time precision switches on
+ *          it once, at the top of its kernel, and calls a version of the
+ *          kernel with constants.
+ *
  *          Accumulation precision. The dot product can accumulate in the
  *          precision of the data (SNRT_ACC_SAME), or in a wider one
  *          (SNRT_ACC_WIDE) using the expanding instructions of the hardware.
@@ -436,11 +445,7 @@ SNRT_VEC_INLINE bool snrt_vec_dot_core_l1(const void* a, const void* b,
                                           void* result, size_t n,
                                           precision_t precision,
                                           snrt_acc_t acc) {
-    // With a constant precision and mode, only the code of that configuration
-    // is generated, in line. Otherwise, a call to the dispatcher.
-    if (__builtin_constant_p(precision) && __builtin_constant_p(acc))
-        return snrt_dot_core_impl(a, b, result, n, precision, acc);
-    return snrt_dot_core_dispatch(a, b, result, n, precision, acc);
+    return snrt_dot_core_impl(a, b, result, n, precision, acc);
 }
 
 /**
@@ -691,13 +696,8 @@ SNRT_VEC_INLINE bool snrt_vec_dot_cores_l1(const void* a, const void* b,
                                            void* result, void* scratch,
                                            size_t n, precision_t precision,
                                            snrt_acc_t acc, size_t cores_log2) {
-    // With a constant precision and mode, only the code of that configuration
-    // is generated, in line. Otherwise, a call to the dispatcher.
-    if (__builtin_constant_p(precision) && __builtin_constant_p(acc))
-        return snrt_dot_multi_impl(a, b, result, scratch, n, precision, acc,
-                                   cores_log2);
-    return snrt_dot_multi_dispatch(a, b, result, scratch, n, precision, acc,
-                                   cores_log2);
+    return snrt_dot_multi_impl(a, b, result, scratch, n, precision, acc,
+                               cores_log2);
 }
 
 /**
@@ -722,11 +722,8 @@ SNRT_VEC_INLINE bool snrt_vec_dot_l1(const void* a, const void* b, void* result,
 SNRT_VEC_INLINE bool snrt_vec_dot_padded_cores_l1(
     const void* a, const void* b, void* result, void* scratch, size_t words,
     precision_t precision, snrt_acc_t acc, size_t cores_log2) {
-    if (__builtin_constant_p(precision) && __builtin_constant_p(acc))
-        return snrt_dot_padded_multi_impl(a, b, result, scratch, words,
-                                          precision, acc, cores_log2);
-    return snrt_dot_padded_dispatch(a, b, result, scratch, words, precision,
-                                    acc, cores_log2);
+    return snrt_dot_padded_multi_impl(a, b, result, scratch, words, precision,
+                                      acc, cores_log2);
 }
 
 /**
