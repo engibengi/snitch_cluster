@@ -382,37 +382,6 @@ SNRT_VEC_INLINE bool snrt_dot_core_impl(const void* a, const void* b,
     return true;
 }
 
-// The configurations that exist, for the dispatchers below: the precision with
-// the same-precision accumulation, and FP16 and FP8 with wide accumulation.
-// Expands to a chain of comparisons, one return per configuration, where CALL
-// is a macro that takes the precision and the mode as constants. No table and
-// no jump table: constant data is in L3, a load from it takes about ten
-// cycles.
-#define SNRT_DOT_DISPATCH(CALL)                                         \
-    do {                                                                \
-        if (acc == SNRT_ACC_SAME) {                                     \
-            if (precision == FP64) return CALL(FP64, SNRT_ACC_SAME);    \
-            if (precision == FP32) return CALL(FP32, SNRT_ACC_SAME);    \
-            if (precision == FP16) return CALL(FP16, SNRT_ACC_SAME);    \
-            if (precision == FP8) return CALL(FP8, SNRT_ACC_SAME);      \
-        } else if (acc == SNRT_ACC_WIDE) {                              \
-            if (precision == FP16) return CALL(FP16, SNRT_ACC_WIDE);    \
-            if (precision == FP8) return CALL(FP8, SNRT_ACC_WIDE);      \
-        }                                                               \
-        return false;                                                   \
-    } while (0)
-
-// For a precision and a mode known only at run time: code specialised for each
-// configuration (six copies of the implementation, with constants), chosen by
-// one comparison chain.
-#define SNRT_DOT_CORE_CALL(P, M) snrt_dot_core_impl(a, b, result, n, P, M)
-__attribute__((noinline, unused)) static bool snrt_dot_core_dispatch(
-    const void* a, const void* b, void* result, size_t n,
-    precision_t precision, snrt_acc_t acc) {
-    SNRT_DOT_DISPATCH(SNRT_DOT_CORE_CALL);
-}
-#undef SNRT_DOT_CORE_CALL
-
 /**
  * @brief Dot product of two vectors in L1, on the calling core only.
  * @details result = sum of a[i] * b[i] for i in [0, n). Whole 64-bit words are
@@ -627,23 +596,6 @@ SNRT_VEC_INLINE bool snrt_dot_padded_multi_impl(
     return true;
 }
 
-#define SNRT_DOT_MULTI_CALL(P, M) \
-    snrt_dot_multi_impl(a, b, result, scratch, n, P, M, cores_log2)
-#define SNRT_DOT_PADDED_CALL(P, M) \
-    snrt_dot_padded_multi_impl(a, b, result, scratch, n, P, M, cores_log2)
-__attribute__((noinline, unused)) static bool snrt_dot_multi_dispatch(
-    const void* a, const void* b, void* result, void* scratch, size_t n,
-    precision_t precision, snrt_acc_t acc, size_t cores_log2) {
-    SNRT_DOT_DISPATCH(SNRT_DOT_MULTI_CALL);
-}
-__attribute__((noinline, unused)) static bool snrt_dot_padded_dispatch(
-    const void* a, const void* b, void* result, void* scratch, size_t n,
-    precision_t precision, snrt_acc_t acc, size_t cores_log2) {
-    SNRT_DOT_DISPATCH(SNRT_DOT_PADDED_CALL);
-}
-#undef SNRT_DOT_MULTI_CALL
-#undef SNRT_DOT_PADDED_CALL
-#undef SNRT_DOT_DISPATCH
 
 /**
  * @brief Dot product of two vectors in L1, across 2^cores_log2 of the compute

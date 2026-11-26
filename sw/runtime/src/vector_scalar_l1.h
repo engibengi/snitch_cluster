@@ -303,36 +303,6 @@ SNRT_VEC_INLINE bool snrt_vs_impl(snrt_vs_op_t op, const void* a, const void* s,
     return true;
 }
 
-// For a precision known only at run time: one non-inlined copy per operation,
-// holding four copies of snrt_vs_impl() specialised for the precisions, chosen
-// by one comparison chain (a switch would load its table from L3).
-#define SNRT_VS_DEFINE_DISPATCH(NAME, OP)                                    \
-    __attribute__((noinline, unused)) static bool snrt_vs_##NAME##_dispatch( \
-        const void* a, const void* s, void* c, size_t n,                     \
-        precision_t precision, size_t core, size_t cores_log2,               \
-        bool padded) {                                                       \
-        SNRT_VEC_BY_PRECISION(                                               \
-            P, snrt_vs_impl(OP, a, s, c, n, P, core, cores_log2, padded));   \
-    }
-SNRT_VS_DEFINE_DISPATCH(add, SNRT_VS_ADD)
-SNRT_VS_DEFINE_DISPATCH(sub, SNRT_VS_SUB)
-SNRT_VS_DEFINE_DISPATCH(mul, SNRT_VS_MUL)
-SNRT_VS_DEFINE_DISPATCH(div, SNRT_VS_DIV)
-SNRT_VS_DEFINE_DISPATCH(min, SNRT_VS_MIN)
-SNRT_VS_DEFINE_DISPATCH(max, SNRT_VS_MAX)
-#undef SNRT_VS_DEFINE_DISPATCH
-
-// Body of a public function: inline for a constant precision, otherwise the
-// call of the dispatcher of the operation. Expects a, s, c, n, precision.
-#define SNRT_VS_ROUTE(NAME, OP, CORE, LOG2, PADDED)                          \
-    do {                                                                     \
-        if (__builtin_constant_p(precision))                                 \
-            return snrt_vs_impl(OP, a, s, c, n, precision, CORE, LOG2,       \
-                                PADDED);                                     \
-        return snrt_vs_##NAME##_dispatch(a, s, c, n, precision, CORE, LOG2,  \
-                                         PADDED);                            \
-    } while (0)
-
 #undef SNRT_VS_LOAD_ASM
 #undef SNRT_VS_STREAM_ASM
 #undef SNRT_VS_WORD_ASM
@@ -950,4 +920,3 @@ SNRT_VEC_INLINE bool snrt_vs_max_padded_auto_l1(const void* a, const void* s,
                         true);
 }
 
-#undef SNRT_VS_ROUTE

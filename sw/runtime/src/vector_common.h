@@ -82,38 +82,6 @@ SNRT_VEC_INLINE bool snrt_vec_precision_valid(precision_t precision) {
 }
 
 /**
- * @brief Evaluate EXPR once for each precision, with P a compile-time constant
- *        in it, and return the value of the one that matches `precision` (a
- *        variable of the caller); false for an invalid precision.
- * @details Used by the non-inlined dispatchers of the vector functions, which
- *          serve a precision known only at run time: one comparison chain
- *          chooses among four copies of the code, each specialised for its
- *          precision, instead of one copy that chooses at every step (a
- *          switch whose table is constant data, in L3). EXPR is the call of
- *          the always-inline implementation, with P as the precision.
- */
-#define SNRT_VEC_BY_PRECISION(P, EXPR)                \
-    do {                                              \
-        if (precision == FP64) {                      \
-            const precision_t P = FP64;               \
-            return EXPR;                              \
-        }                                             \
-        if (precision == FP32) {                      \
-            const precision_t P = FP32;               \
-            return EXPR;                              \
-        }                                             \
-        if (precision == FP16) {                      \
-            const precision_t P = FP16;               \
-            return EXPR;                              \
-        }                                             \
-        if (precision == FP8) {                       \
-            const precision_t P = FP8;                \
-            return EXPR;                              \
-        }                                             \
-        return false;                                 \
-    } while (0)
-
-/**
  * @brief Base-2 logarithm of snrt_vec_lanes(): FP64 = 0, FP32 = 1, FP16 = 2,
  *        FP8 = 3.
  * @details Comparisons, no table: constant data is linked into L3, and a load

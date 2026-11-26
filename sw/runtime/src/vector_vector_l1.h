@@ -312,36 +312,6 @@ SNRT_VEC_INLINE bool snrt_vv_impl(snrt_vv_op_t op, const void* a, const void* b,
     return true;
 }
 
-// For a precision known only at run time: one non-inlined copy per operation,
-// holding four copies of snrt_vv_impl() specialised for the precisions, chosen
-// by one comparison chain (a switch would load its table from L3).
-#define SNRT_VV_DEFINE_DISPATCH(NAME, OP)                                    \
-    __attribute__((noinline, unused)) static bool snrt_vv_##NAME##_dispatch( \
-        const void* a, const void* b, void* c, size_t n,                     \
-        precision_t precision, size_t core, size_t cores_log2,               \
-        bool padded) {                                                       \
-        SNRT_VEC_BY_PRECISION(                                               \
-            P, snrt_vv_impl(OP, a, b, c, n, P, core, cores_log2, padded));   \
-    }
-SNRT_VV_DEFINE_DISPATCH(add, SNRT_VV_ADD)
-SNRT_VV_DEFINE_DISPATCH(sub, SNRT_VV_SUB)
-SNRT_VV_DEFINE_DISPATCH(mul, SNRT_VV_MUL)
-SNRT_VV_DEFINE_DISPATCH(div, SNRT_VV_DIV)
-SNRT_VV_DEFINE_DISPATCH(min, SNRT_VV_MIN)
-SNRT_VV_DEFINE_DISPATCH(max, SNRT_VV_MAX)
-#undef SNRT_VV_DEFINE_DISPATCH
-
-// Body of a public function: inline for a constant precision, otherwise the
-// call of the dispatcher of the operation. Expects a, b, c, n, precision.
-#define SNRT_VV_ROUTE(NAME, OP, CORE, LOG2, PADDED)                          \
-    do {                                                                     \
-        if (__builtin_constant_p(precision))                                 \
-            return snrt_vv_impl(OP, a, b, c, n, precision, CORE, LOG2,       \
-                                PADDED);                                     \
-        return snrt_vv_##NAME##_dispatch(a, b, c, n, precision, CORE, LOG2,  \
-                                         PADDED);                            \
-    } while (0)
-
 #undef SNRT_VV_STREAM_ASM
 #undef SNRT_VV_WORD_ASM
 #undef SNRT_VV_BY_PRECISION
@@ -1181,22 +1151,6 @@ SNRT_VEC_INLINE bool snrt_vv_axpy_impl(const void* alpha, const void* x,
     return true;
 }
 
-__attribute__((noinline, unused)) static bool snrt_vv_axpy_dispatch(
-    const void* alpha, const void* x, const void* y, void* z, size_t n,
-    precision_t precision, size_t core, size_t cores_log2, bool padded) {
-    SNRT_VEC_BY_PRECISION(
-        P, snrt_vv_axpy_impl(alpha, x, y, z, n, P, core, cores_log2, padded));
-}
-
-#define SNRT_VV_AXPY_ROUTE(CORE, LOG2, PADDED)                               \
-    do {                                                                     \
-        if (__builtin_constant_p(precision))                                 \
-            return snrt_vv_axpy_impl(alpha, x, y, z, n, precision, CORE,     \
-                                     LOG2, PADDED);                          \
-        return snrt_vv_axpy_dispatch(alpha, x, y, z, n, precision, CORE,     \
-                                     LOG2, PADDED);                          \
-    } while (0)
-
 /**
  * @brief Compute z = alpha * x + y for vectors in L1, on the calling core
  *        only.
@@ -1324,5 +1278,3 @@ SNRT_VEC_INLINE bool snrt_vv_axpy_padded_auto_l1(const void* alpha,
                              true);
 }
 
-#undef SNRT_VV_ROUTE
-#undef SNRT_VV_AXPY_ROUTE
